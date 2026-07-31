@@ -1,0 +1,18 @@
+// Tells sequelize-cli where things live, and registers ts-node so migrations
+// and seeders can be written in TypeScript rather than plain JS.
+//
+// This file is the ONLY indirection in the migration tooling. Without the
+// ts-node registration below, `sequelize-cli db:migrate` would not know how to
+// load a .ts migration and would silently find zero migrations to run.
+require('ts-node/register');
+
+const path = require('path');
+
+module.exports = {
+  // CommonJS, not TypeScript: sequelize-cli requires this file directly and
+  // cannot cleanly consume a TS default export.
+  config: path.resolve('config', 'sequelize.config.js'),
+  'migrations-path': path.resolve('migrations'),
+  'seeders-path': path.resolve('seeders'),
+  'models-path': path.resolve('src', 'models'),
+};

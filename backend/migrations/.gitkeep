@@ -1,0 +1,6 @@
+# Migrations live here (step 2), in foreign-key order:
+#   modules → currencies → plans → users → wallets → balances
+#   → payments → campaigns → ledger
+#
+# Written in TypeScript and loaded by sequelize-cli via the ts-node
+# registration in backend/.sequelizerc.

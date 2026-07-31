@@ -1,0 +1,15 @@
+# Never copy host modules into the image — they may be built for a different
+# platform than the container.
+node_modules
+dist
+coverage
+
+# Secrets stay out of the image. Compose supplies configuration as environment
+# variables instead.
+.env
+.env.*
+!.env.example
+
+*.log
+npm-debug.log*
+.DS_Store

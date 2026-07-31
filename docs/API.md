@@ -46,10 +46,12 @@ sequenceDiagram
     U->>FE: choose currency plus plan or quantity
     FE->>API: POST /api/payments/checkout-session
     Note over API: amount_paise computed from seeded config<br/>a client-supplied amount is never read
-    API->>S: checkout.sessions.create(amount_paise)
+    API->>DB: INSERT payments (status pending, no cs_ yet)
+    Note over DB: local record precedes the money-moving object<br/>a charge can never exist without a row to account for it
+    API->>S: checkout.sessions.create(amount_paise, metadata.payment_id)
     S-->>API: cs_ id and checkout_url
-    API->>DB: INSERT payments (status pending, stripe_session_id cs_)
-    Note over DB: row exists BEFORE any webhook<br/>so a late or early event always finds it
+    API->>DB: UPDATE payments SET stripe_session_id = cs_
+    Note over API,DB: if this backfill fails or merely lags<br/>the tier-2 metadata lookup heals it during the grant
     API-->>FE: 201 with checkout_url
     FE->>S: redirect to Stripe Checkout
     U->>S: pay with test card 4242
@@ -66,7 +68,9 @@ sequenceDiagram
         API->>API: verify signature on RAW bytes
         Note over API: invalid signature returns 400<br/>database never touched
         API->>DB: BEGIN
-        API->>DB: SELECT payments FOR UPDATE
+        API->>DB: find payments by cs_, else by metadata.payment_id
+        API->>DB: SELECT that row FOR UPDATE
+        API->>DB: backfill cs_ and pi_ onto the row if missing
         API->>DB: INSERT ledger (+credits, payment_id) ⟵ UNIQUE(payment_id)
         API->>DB: UPDATE balances SET balance = balance + credits
         API->>DB: UPDATE payments SET status paid (was pending)
@@ -332,6 +336,8 @@ Exactly one of `plan_id` or `quantity`, and `currency_code` is required in both 
 
 `credits` and `amount_paise` are echoed for display only; they are computed server-side and frozen onto the `payments` row. A `plan_id` belonging to a different currency than `currency_code` is rejected — the client declares intent, the server validates it against config, and the server alone prices it.
 
+**Order of operations is load-bearing.** The `payments` row is inserted *before* the Stripe session is created, the session carries `metadata.payment_id`, and `cs_` is backfilled onto the row afterwards. The local record always precedes the money-moving object, so a charge can never exist without a row to account for it. See [DESIGN.md → Buy credits](../DESIGN.md#buy-credits) for the failure-by-failure argument.
+
 Stripe is configured with:
 - `success_url` = `{FRONTEND_URL}/wallet?checkout=success&session_id={CHECKOUT_SESSION_ID}`
 - `cancel_url` = `{FRONTEND_URL}/wallet?checkout=cancelled`
@@ -368,6 +374,8 @@ Not JSON-parsed and not JWT-protected — authenticated instead by the `Stripe-S
 
 Credits are granted **only** on `checkout.session.completed` with `payment_status === 'paid'`. Every other event type is acknowledged and ignored.
 
+**Two-tier payment resolution.** The handler finds the `payments` row by `stripe_session_id` first. On a miss it falls back to `metadata.payment_id` carried on the session, loads that row, and backfills the missing `cs_`/`pi_` onto it *inside the same grant transaction*. The metadata is written atomically with the session's existence and cannot drift; the `cs_` column is a post-hoc backfill that can fail or lag. Tier 2 therefore covers both the backfill *failing* and the backfill merely being *late* — a fast webhook overtaking a slow write on the happy path. Which tier found the row has no bearing on exactly-once: the grant is keyed on `payments.id` either way, and `UNIQUE(ledger.payment_id)` is indifferent to how the row was located.
+
 Response contract:
 
 | Situation | Status | Why |
@@ -378,7 +386,7 @@ Response contract:
 | Verified, `UNIQUE(ledger.payment_id)` violated | `200` | Same — a concurrent duplicate lost the race |
 | Verified, unhandled event type | `200` | Acknowledged, ignored |
 | Verified, `completed` but `payment_status !== 'paid'` | `200` | Nothing granted; not an error |
-| Unknown `cs_` (no matching payment row) | `200` | Cannot be fixed by retrying |
+| No row found by `cs_` **nor** by `metadata.payment_id` | `200` | Genuinely unknown to us — retrying cannot fix it |
 | Transient database/infrastructure failure | `500` | Invite Stripe to redeliver |
 
 The distinction that matters: `5xx` is reserved for failures a retry could plausibly fix. Anything permanent returns `2xx` so Stripe's retry schedule stops hammering an endpoint that will never succeed.

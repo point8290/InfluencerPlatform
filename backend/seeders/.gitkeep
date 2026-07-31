@@ -1,0 +1,4 @@
+# Seeders live here (step 2): 3 modules, 3 currencies, 6 plans.
+#
+# Currencies, modules and plans are seeded configuration rather than runtime
+# data — a new currency or module is added here, not in business logic.

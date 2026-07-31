@@ -22,7 +22,7 @@ services:
     ports:
       # Host 3307, not 3306: a locally installed MySQL usually holds 3306, and
       # publishing there would either fail to bind or silently shadow it.
-      - '3307:3306'
+      - "127.0.0.1:3307:3306"
     volumes:
       - mysql_data:/var/lib/mysql
       - ./docker/mysql/init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
@@ -35,7 +35,7 @@ services:
       # actually accept our queries. Running a real query avoids that.
       test:
         [
-          'CMD-SHELL',
+          "CMD-SHELL",
           'mysql -h 127.0.0.1 -uroot -p"$$MYSQL_ROOT_PASSWORD" -e "SELECT 1" >/dev/null 2>&1',
         ]
       interval: 5s
@@ -73,7 +73,7 @@ services:
       STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY:-}
       STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET:-}
     ports:
-      - '4000:4000'
+      - "4000:4000"
     volumes:
       - ./backend:/app
       # Anonymous volume: keeps the container's node_modules from being hidden
@@ -92,7 +92,7 @@ services:
       # Resolved by the browser, not by the container, so this is the host URL.
       VITE_API_URL: http://localhost:4000
     ports:
-      - '5173:5173'
+      - "5173:5173"
     volumes:
       - ./frontend:/app
       - /app/node_modules

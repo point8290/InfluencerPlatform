@@ -10,6 +10,7 @@ import {
 import { sequelize } from '../config/database';
 import type { User } from './user.model';
 import type { Module } from './module.model';
+import type { LedgerEntry } from './ledgerEntry.model';
 
 export type CampaignStatus = 'draft' | 'funded';
 
@@ -34,6 +35,12 @@ export class Campaign extends Model<InferAttributes<Campaign>, InferCreationAttr
 
   declare user?: NonAttribute<User>;
   declare module?: NonAttribute<Module>;
+
+  /**
+   * At most one, guaranteed by UNIQUE(ledger.campaign_id). This is where the
+   * funded amount is read from — it is deliberately not stored on this table.
+   */
+  declare ledgerEntry?: NonAttribute<LedgerEntry>;
 }
 
 Campaign.init(

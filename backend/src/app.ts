@@ -6,6 +6,8 @@ import { stripeWebhookRouter } from './modules/webhooks/webhook.routes';
 import { authRouter } from './modules/auth/auth.routes';
 import { currencyRouter } from './modules/currencies/currency.routes';
 import { paymentRouter } from './modules/payments/payment.routes';
+import { walletRouter } from './modules/wallet/wallet.routes';
+import { campaignRouter } from './modules/campaigns/campaign.routes';
 
 /**
  * Builds the Express application without binding a port, so tests can drive it
@@ -45,9 +47,8 @@ export function createApp(): express.Express {
   app.use('/api/auth', authRouter);
   app.use('/api/currencies', currencyRouter);
   app.use('/api/payments', paymentRouter);
-
-  // Feature routers are mounted here as they arrive:
-  //   step 5 — /api/wallet, /api/campaigns
+  app.use('/api/wallet', walletRouter);
+  app.use('/api/campaigns', campaignRouter);
 
   // Must stay last: unmatched routes, then the single error responder.
   app.use(notFoundHandler);

@@ -1,5 +1,16 @@
 import { Sequelize } from 'sequelize';
-import { env, isProduction } from './env';
+import { env, isProduction, isTest } from './env';
+
+/**
+ * The database this process talks to.
+ *
+ * Selected by NODE_ENV so the test suite can never touch development data —
+ * the tests delete every user, wallet, payment and ledger row between cases,
+ * which would be destructive against the wrong schema. `npm test` sets
+ * NODE_ENV=test, and sequelize-cli picks the same database through the `test`
+ * block of config/sequelize.config.js, which reads the same env.db.nameTest.
+ */
+const databaseName = isTest ? env.db.nameTest : env.db.name;
 
 /**
  * The application's Sequelize instance.
@@ -10,14 +21,14 @@ import { env, isProduction } from './env';
  * migrations never produced, which is exactly the drift the assignment's
  * "migrations, not sync()" requirement exists to prevent.
  */
-export const sequelize = new Sequelize(env.db.name, env.db.user, env.db.password, {
+export const sequelize = new Sequelize(databaseName, env.db.user, env.db.password, {
   host: env.db.host,
   port: env.db.port,
   dialect: 'mysql',
 
   // Query logging is useful while tracing transactions and row locks by hand,
   // and noise everywhere else.
-  logging: isProduction || env.nodeEnv === 'test' ? false : console.log,
+  logging: isProduction || isTest ? false : console.log,
 
   define: {
     // Columns are snake_case (created_at, wallet_id) to match the migrations.

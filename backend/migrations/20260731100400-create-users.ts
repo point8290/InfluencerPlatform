@@ -1,11 +1,11 @@
-import { DataTypes, literal, type QueryInterface } from 'sequelize';
+import { DataTypes, literal, type QueryInterface } from "sequelize";
 
 /**
  * Users. Passwords are stored only as a bcrypt hash — never the password, and
  * never a reversible encryption of it.
  */
 export async function up(queryInterface: QueryInterface): Promise<void> {
-  await queryInterface.createTable('users', {
+  await queryInterface.createTable("users", {
     id: {
       type: DataTypes.BIGINT.UNSIGNED,
       primaryKey: true,
@@ -16,8 +16,6 @@ export async function up(queryInterface: QueryInterface): Promise<void> {
       type: DataTypes.STRING(255),
       allowNull: false,
     },
-    // bcrypt hashes are 60 characters; 255 leaves room to migrate to another
-    // algorithm later without a schema change.
     password_hash: {
       type: DataTypes.STRING(255),
       allowNull: false,
@@ -25,22 +23,22 @@ export async function up(queryInterface: QueryInterface): Promise<void> {
     created_at: {
       type: DataTypes.DATE,
       allowNull: false,
-      defaultValue: literal('CURRENT_TIMESTAMP'),
+      defaultValue: literal("CURRENT_TIMESTAMP"),
     },
     updated_at: {
       type: DataTypes.DATE,
       allowNull: false,
-      defaultValue: literal('CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP'),
+      defaultValue: literal("CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP"),
     },
   });
 
-  await queryInterface.addConstraint('users', {
-    fields: ['email'],
-    type: 'unique',
-    name: 'uq_users_email',
+  await queryInterface.addConstraint("users", {
+    fields: ["email"],
+    type: "unique",
+    name: "uq_users_email",
   });
 }
 
 export async function down(queryInterface: QueryInterface): Promise<void> {
-  await queryInterface.dropTable('users');
+  await queryInterface.dropTable("users");
 }

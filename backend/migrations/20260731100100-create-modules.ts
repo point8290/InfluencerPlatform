@@ -1,4 +1,4 @@
-import { DataTypes, literal, type QueryInterface } from 'sequelize';
+import { DataTypes, literal, type QueryInterface } from "sequelize";
 
 /**
  * Platform modules — Campaigns, Reports, Discovery.
@@ -7,12 +7,9 @@ import { DataTypes, literal, type QueryInterface } from 'sequelize';
  * currency<->module binding: each module has exactly one currency that may be
  * spent in it, enforced by UNIQUE(currencies.module_id) in the next migration.
  *
- * `code` rather than `key`: KEY is structurally reserved in MySQL (it is the
- * keyword for index declarations), so a hand-typed `WHERE key = 'campaigns'`
- * would be a syntax error without backticks.
  */
 export async function up(queryInterface: QueryInterface): Promise<void> {
-  await queryInterface.createTable('modules', {
+  await queryInterface.createTable("modules", {
     id: {
       type: DataTypes.BIGINT.UNSIGNED,
       primaryKey: true,
@@ -30,24 +27,22 @@ export async function up(queryInterface: QueryInterface): Promise<void> {
     created_at: {
       type: DataTypes.DATE,
       allowNull: false,
-      defaultValue: literal('CURRENT_TIMESTAMP'),
+      defaultValue: literal("CURRENT_TIMESTAMP"),
     },
     updated_at: {
       type: DataTypes.DATE,
       allowNull: false,
-      defaultValue: literal('CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP'),
+      defaultValue: literal("CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP"),
     },
   });
 
-  // Named explicitly rather than declared inline as `unique: true`, so that
-  // SHOW CREATE TABLE names the constraint instead of showing a bare column.
-  await queryInterface.addConstraint('modules', {
-    fields: ['code'],
-    type: 'unique',
-    name: 'uq_modules_code',
+  await queryInterface.addConstraint("modules", {
+    fields: ["code"],
+    type: "unique",
+    name: "uq_modules_code",
   });
 }
 
 export async function down(queryInterface: QueryInterface): Promise<void> {
-  await queryInterface.dropTable('modules');
+  await queryInterface.dropTable("modules");
 }

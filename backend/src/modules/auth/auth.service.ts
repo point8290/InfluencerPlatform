@@ -1,27 +1,22 @@
-import { Balance, Currency, User, Wallet, sequelize } from '../../models';
+import { Balance, Currency, User, Wallet, sequelize } from "../../models";
 import {
   DECOY_PASSWORD_HASH,
   MAX_PASSWORD_BYTES,
   hashPassword,
   verifyPassword,
-} from '../../lib/password';
-import { signAccessToken } from '../../lib/jwt';
+} from "../../lib/password";
+import { signAccessToken } from "../../lib/jwt";
 import {
   ConflictError,
   InvalidCredentialsError,
   UnauthenticatedError,
   ValidationError,
   type ErrorDetail,
-} from '../../lib/errors';
-import { isUniqueViolation } from '../../lib/isUniqueViolation';
+} from "../../lib/errors";
+import { isUniqueViolation } from "../../lib/isUniqueViolation";
 
 const MIN_PASSWORD_LENGTH = 8;
 
-/**
- * Deliberately permissive. The only way to truly validate an address is to send
- * mail to it; a stricter regex would reject valid addresses while still not
- * proving deliverability.
- */
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 export interface PublicUser {
@@ -39,19 +34,15 @@ function toPublicUser(user: User): PublicUser {
 }
 
 function readEmail(raw: unknown, details: ErrorDetail[]): string {
-  if (typeof raw !== 'string' || raw.trim() === '') {
-    details.push({ field: 'email', message: 'Email is required.' });
-    return '';
+  if (typeof raw !== "string" || raw.trim() === "") {
+    details.push({ field: "email", message: "Email is required." });
+    return "";
   }
 
-  // Normalised to lowercase before storage AND before lookup, so the two always
-  // agree. The column's utf8mb4_unicode_ci collation already makes
-  // uq_users_email case-insensitive, so this is about storing one consistent
-  // form rather than about enforcing uniqueness.
   const email = raw.trim().toLowerCase();
 
   if (!EMAIL_PATTERN.test(email)) {
-    details.push({ field: 'email', message: 'Email is not a valid address.' });
+    details.push({ field: "email", message: "Email is not a valid address." });
   }
   return email;
 }
@@ -60,22 +51,25 @@ function readEmail(raw: unknown, details: ErrorDetail[]): string {
  * Signup enforces the password policy. Login deliberately does NOT — see
  * validateLoginInput.
  */
-export function validateSignupInput(body: unknown): { email: string; password: string } {
+export function validateSignupInput(body: unknown): {
+  email: string;
+  password: string;
+} {
   const details: ErrorDetail[] = [];
   const input = (body ?? {}) as Record<string, unknown>;
 
   const email = readEmail(input.email, details);
   const rawPassword = input.password;
-  let password = '';
+  let password = "";
 
-  if (typeof rawPassword !== 'string' || rawPassword === '') {
-    details.push({ field: 'password', message: 'Password is required.' });
+  if (typeof rawPassword !== "string" || rawPassword === "") {
+    details.push({ field: "password", message: "Password is required." });
   } else {
     password = rawPassword;
 
     if (password.length < MIN_PASSWORD_LENGTH) {
       details.push({
-        field: 'password',
+        field: "password",
         message: `Password must be at least ${MIN_PASSWORD_LENGTH} characters.`,
       });
     }
@@ -83,16 +77,16 @@ export function validateSignupInput(body: unknown): { email: string; password: s
     // bcrypt ignores everything past 72 bytes. Accepting a longer password
     // would mean silently truncating it, so two different passwords would open
     // the same account. Rejecting is honest; truncating is not.
-    if (Buffer.byteLength(password, 'utf8') > MAX_PASSWORD_BYTES) {
+    if (Buffer.byteLength(password, "utf8") > MAX_PASSWORD_BYTES) {
       details.push({
-        field: 'password',
+        field: "password",
         message: `Password must be at most ${MAX_PASSWORD_BYTES} bytes.`,
       });
     }
   }
 
   if (details.length > 0) {
-    throw new ValidationError('Request body failed validation.', details);
+    throw new ValidationError("Request body failed validation.", details);
   }
   return { email, password };
 }
@@ -105,19 +99,22 @@ export function validateSignupInput(body: unknown): { email: string; password: s
  * Policy belongs at registration; authentication only asks whether the secret
  * matches.
  */
-export function validateLoginInput(body: unknown): { email: string; password: string } {
+export function validateLoginInput(body: unknown): {
+  email: string;
+  password: string;
+} {
   const details: ErrorDetail[] = [];
   const input = (body ?? {}) as Record<string, unknown>;
 
   const email = readEmail(input.email, details);
   const rawPassword = input.password;
 
-  if (typeof rawPassword !== 'string' || rawPassword === '') {
-    details.push({ field: 'password', message: 'Password is required.' });
+  if (typeof rawPassword !== "string" || rawPassword === "") {
+    details.push({ field: "password", message: "Password is required." });
   }
 
   if (details.length > 0) {
-    throw new ValidationError('Request body failed validation.', details);
+    throw new ValidationError("Request body failed validation.", details);
   }
   return { email, password: rawPassword as string };
 }
@@ -151,13 +148,19 @@ export async function signup(body: unknown): Promise<AuthResult> {
 
       if (currencies.length === 0) {
         throw new Error(
-          'No currencies are seeded — run `npm run seed`. Refusing to create a wallet ' +
-            'with no balance rows, because later grants and spends assume they exist.',
+          "No currencies are seeded — run `npm run seed`. Refusing to create a wallet " +
+            "with no balance rows, because later grants and spends assume they exist.",
         );
       }
 
-      const created = await User.create({ email, passwordHash }, { transaction });
-      const wallet = await Wallet.create({ userId: created.id }, { transaction });
+      const created = await User.create(
+        { email, passwordHash },
+        { transaction },
+      );
+      const wallet = await Wallet.create(
+        { userId: created.id },
+        { transaction },
+      );
 
       await Balance.bulkCreate(
         currencies.map((currency) => ({
@@ -171,8 +174,11 @@ export async function signup(body: unknown): Promise<AuthResult> {
       return created;
     });
   } catch (error) {
-    if (isUniqueViolation(error, 'uq_users_email')) {
-      throw new ConflictError('EMAIL_ALREADY_REGISTERED', 'That email is already registered.');
+    if (isUniqueViolation(error, "uq_users_email")) {
+      throw new ConflictError(
+        "EMAIL_ALREADY_REGISTERED",
+        "That email is already registered.",
+      );
     }
     throw error;
   }
@@ -193,9 +199,12 @@ export async function login(body: unknown): Promise<AuthResult> {
 
   // withPassword replaces the model's default scope, which otherwise excludes
   // password_hash from every read.
-  const user = await User.scope('withPassword').findOne({ where: { email } });
+  const user = await User.scope("withPassword").findOne({ where: { email } });
 
-  const passwordMatches = await verifyPassword(password, user?.passwordHash ?? DECOY_PASSWORD_HASH);
+  const passwordMatches = await verifyPassword(
+    password,
+    user?.passwordHash ?? DECOY_PASSWORD_HASH,
+  );
 
   if (user === null || !passwordMatches) {
     throw new InvalidCredentialsError();
@@ -212,7 +221,7 @@ export async function getCurrentUser(userId: number): Promise<PublicUser> {
   const user = await User.findByPk(userId);
 
   if (user === null) {
-    throw new UnauthenticatedError('This account no longer exists.');
+    throw new UnauthenticatedError("This account no longer exists.");
   }
   return toPublicUser(user);
 }

@@ -1,4 +1,4 @@
-import { DataTypes, literal, type QueryInterface } from 'sequelize';
+import { DataTypes, literal, type QueryInterface } from "sequelize";
 
 /**
  * Per-currency balance for a wallet — a materialized, transactionally
@@ -21,7 +21,7 @@ import { DataTypes, literal, type QueryInterface } from 'sequelize';
  * assume the row exists and is lockable — there is no lazy-create path to race.
  */
 export async function up(queryInterface: QueryInterface): Promise<void> {
-  await queryInterface.createTable('balances', {
+  await queryInterface.createTable("balances", {
     id: {
       type: DataTypes.BIGINT.UNSIGNED,
       primaryKey: true,
@@ -31,16 +31,16 @@ export async function up(queryInterface: QueryInterface): Promise<void> {
     wallet_id: {
       type: DataTypes.BIGINT.UNSIGNED,
       allowNull: false,
-      references: { model: 'wallets', key: 'id' },
-      onUpdate: 'CASCADE',
-      onDelete: 'CASCADE',
+      references: { model: "wallets", key: "id" },
+      onUpdate: "CASCADE",
+      onDelete: "CASCADE",
     },
     currency_id: {
       type: DataTypes.BIGINT.UNSIGNED,
       allowNull: false,
-      references: { model: 'currencies', key: 'id' },
-      onUpdate: 'CASCADE',
-      onDelete: 'RESTRICT',
+      references: { model: "currencies", key: "id" },
+      onUpdate: "CASCADE",
+      onDelete: "RESTRICT",
     },
     // Signed BIGINT rather than UNSIGNED on purpose: an unsigned underflow
     // raises an out-of-range error, whereas the named CHECK below fails with a
@@ -53,29 +53,28 @@ export async function up(queryInterface: QueryInterface): Promise<void> {
     created_at: {
       type: DataTypes.DATE,
       allowNull: false,
-      defaultValue: literal('CURRENT_TIMESTAMP'),
+      defaultValue: literal("CURRENT_TIMESTAMP"),
     },
     updated_at: {
       type: DataTypes.DATE,
       allowNull: false,
-      defaultValue: literal('CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP'),
+      defaultValue: literal("CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP"),
     },
   });
 
-  // Exactly one balance row per (wallet, currency). See the note above — this
-  // is what makes the row lock meaningful.
-  await queryInterface.addConstraint('balances', {
-    fields: ['wallet_id', 'currency_id'],
-    type: 'unique',
-    name: 'uq_balances_wallet_currency',
+  // Exactly one balance row per (wallet, currency).
+  await queryInterface.addConstraint("balances", {
+    fields: ["wallet_id", "currency_id"],
+    type: "unique",
+    name: "uq_balances_wallet_currency",
   });
 
   await queryInterface.sequelize.query(
-    'ALTER TABLE `balances` ADD CONSTRAINT `chk_balances_non_negative` ' +
-      'CHECK (`balance` >= 0)',
+    "ALTER TABLE `balances` ADD CONSTRAINT `chk_balances_non_negative` " +
+      "CHECK (`balance` >= 0)",
   );
 }
 
 export async function down(queryInterface: QueryInterface): Promise<void> {
-  await queryInterface.dropTable('balances');
+  await queryInterface.dropTable("balances");
 }

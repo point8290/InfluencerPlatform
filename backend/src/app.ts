@@ -3,6 +3,7 @@ import cors from 'cors';
 import { env } from './config/env';
 import { errorHandler, notFoundHandler } from './middleware/errorHandler';
 import { stripeWebhookRouter } from './modules/webhooks/webhook.routes';
+import { authRouter } from './modules/auth/auth.routes';
 
 /**
  * Builds the Express application without binding a port, so tests can drive it
@@ -39,8 +40,9 @@ export function createApp(): express.Express {
     res.json({ status: 'ok', environment: env.nodeEnv });
   });
 
+  app.use('/api/auth', authRouter);
+
   // Feature routers are mounted here as they arrive:
-  //   step 3 — /api/auth
   //   step 4 — /api/payments, /api/currencies
   //   step 5 — /api/wallet, /api/campaigns
 

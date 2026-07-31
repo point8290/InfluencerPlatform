@@ -55,6 +55,17 @@ export class UnauthenticatedError extends AppError {
 }
 
 /**
+ * Login failure. The message is deliberately identical whether the email is
+ * unknown or the password is wrong — the endpoint must not become an oracle
+ * for which accounts exist.
+ */
+export class InvalidCredentialsError extends AppError {
+  constructor() {
+    super('INVALID_CREDENTIALS', 401, 'Email or password is incorrect.');
+  }
+}
+
+/**
  * Used for resources that are absent *and* for resources owned by another
  * user — ownership is not an information leak, so both look identical.
  */

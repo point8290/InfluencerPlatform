@@ -18,5 +18,11 @@
 
     "noEmit": true
   },
-  "include": ["src/**/*.ts", "migrations/**/*.ts", "seeders/**/*.ts", "tests/**/*.ts"]
+  "include": [
+    "src/**/*.ts",
+    "migrations/**/*.ts",
+    "seeders/**/*.ts",
+    "scripts/**/*.ts",
+    "tests/**/*.ts"
+  ]
 }

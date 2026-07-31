@@ -70,9 +70,17 @@ export function constructVerifiedEvent(rawBody: unknown, signature: unknown): St
 
   try {
     return getStripe().webhooks.constructEvent(rawBody, signature, requireStripeWebhookSecret());
-  } catch {
-    // The reason is deliberately not echoed back. A caller probing the endpoint
-    // learns only that it was rejected.
+  } catch (error) {
+    // Logged server-side but never echoed back: a caller probing the endpoint
+    // learns only that it was rejected, while an operator can tell a genuine
+    // forgery from a stale STRIPE_WEBHOOK_SECRET — which otherwise presents as
+    // "the webhook silently does nothing", the least debuggable failure there is.
+    console.warn(
+      `[webhook] REJECTED: signature verification failed (${
+        error instanceof Error ? error.message : 'unknown reason'
+      }). If deliveries are being rejected in bulk, check STRIPE_WEBHOOK_SECRET ` +
+        'against `stripe listen --print-secret`.',
+    );
     throw new BadRequestError('INVALID_SIGNATURE', 'Signature verification failed.');
   }
 }

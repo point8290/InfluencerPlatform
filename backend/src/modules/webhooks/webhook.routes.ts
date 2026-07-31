@@ -28,6 +28,11 @@ stripeWebhookRouter.post(
 
     const outcome = await processVerifiedEvent(event);
 
+    // One line per delivery, so a duplicate or an unexpected outcome is visible
+    // in the server log without reading the database. Traceable by evt_ id,
+    // which is what `stripe events resend` takes.
+    console.log(`[webhook] ${event.id} ${event.type} -> ${outcome}`);
+
     // The outcome is echoed to make `stripe listen` output self-explanatory
     // while tracing duplicate deliveries by hand.
     res.status(200).json({ received: true, event: event.type, outcome });

@@ -33,8 +33,17 @@ const MIN_PASSWORD_LENGTH = 8;
  */
 const MAX_PASSWORD_LENGTH = 64;
 
-/** Space (0x20) through tilde (0x7E) — printable ASCII, one byte each. */
-const PRINTABLE_ASCII = /^[\x20-\x7E]+$/;
+/**
+ * '!' (0x21) through '~' (0x7E) — printable ASCII excluding the space, one byte
+ * per character. Letters, digits and punctuation/symbols only.
+ *
+ * The space is excluded deliberately. Note this moves further from NIST
+ * SP 800-63B, which recommends allowing spaces so users can choose
+ * passphrases; the trade-off is that a leading or trailing space typed by
+ * accident (or pasted from a password manager) can no longer be stored
+ * invisibly and then fail at login with no explanation.
+ */
+const ALLOWED_PASSWORD_CHARACTERS = /^[\x21-\x7E]+$/;
 
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -98,11 +107,11 @@ export function validateSignupInput(body: unknown): {
 
     // Keeps one character equal to one byte, which is what makes the length
     // rule above sufficient to stay under bcrypt's 72-byte input limit.
-    if (!PRINTABLE_ASCII.test(password)) {
+    if (!ALLOWED_PASSWORD_CHARACTERS.test(password)) {
       details.push({
         field: "password",
         message:
-          "Password may only contain letters, numbers, spaces and common punctuation.",
+          "Password may only contain letters, numbers and special characters — no spaces.",
       });
     }
   }

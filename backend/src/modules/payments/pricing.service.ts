@@ -8,6 +8,23 @@ import { BadRequestError, NotFoundError, ValidationError, type ErrorDetail } fro
  */
 const MAX_AMOUNT_PAISE = 99_999_999;
 
+/**
+ * Stripe also enforces a MINIMUM charge — the total must convert to at least
+ * ~US$0.50, and it rejects the session outright otherwise:
+ *
+ *   "The Checkout Session's total amount must convert to at least 50 cents.
+ *    ₹30.00 converts to approximately $0.31."
+ *
+ * ₹50 is Stripe's documented minimum charge for INR and clears the USD floor
+ * with room for exchange-rate movement. Checking it here turns what would
+ * otherwise be a 500 from the Stripe SDK — after a pending payment row has
+ * already been written — into a 400 that names the field and says what to do.
+ *
+ * Every seeded bundle is comfortably above this; it only constrains very small
+ * per-credit purchases (10 Campaign Credits is ₹30).
+ */
+const MIN_AMOUNT_PAISE = 5_000;
+
 export interface PriceQuote {
   currency: Currency;
   plan: Plan | null;
@@ -131,11 +148,27 @@ export async function quotePurchase(body: unknown): Promise<PriceQuote> {
 
   // Both operands are integers, so the product is exact — no rounding step and
   // no floating point anywhere in the money path.
+  const amountField = request.planId !== null ? 'plan_id' : 'quantity';
+
   if (quote.amountPaise > MAX_AMOUNT_PAISE) {
     throw new ValidationError('Requested amount exceeds the maximum Stripe accepts.', [
       {
-        field: request.planId !== null ? 'plan_id' : 'quantity',
+        field: amountField,
         message: `Amount ${quote.amountPaise} paise exceeds the maximum of ${MAX_AMOUNT_PAISE}.`,
+      },
+    ]);
+  }
+
+  if (quote.amountPaise < MIN_AMOUNT_PAISE) {
+    const minimumCredits = Math.ceil(MIN_AMOUNT_PAISE / currency.pricePaisePerCredit);
+
+    throw new ValidationError('Requested amount is below the minimum Stripe accepts.', [
+      {
+        field: amountField,
+        message:
+          `Minimum purchase is ₹${MIN_AMOUNT_PAISE / 100}. ` +
+          `${quote.credits} ${currency.name} costs ₹${quote.amountPaise / 100} — ` +
+          `buy at least ${minimumCredits} credits.`,
       },
     ]);
   }

@@ -1,122 +1,100 @@
-import { useState } from 'react'
-import reactLogo from './assets/react.svg'
-import viteLogo from './assets/vite.svg'
-import heroImg from './assets/hero.png'
-import './App.css'
+import { BrowserRouter, NavLink, Navigate, Route, Routes, useLocation } from 'react-router-dom';
+import type { ReactNode } from 'react';
+import { AuthProvider, useAuth } from './auth/AuthContext';
+import { LoginPage, SignupPage } from './pages/AuthPages';
+import { WalletPage } from './pages/WalletPage';
+import { CampaignsPage } from './pages/CampaignsPage';
 
-function App() {
-  const [count, setCount] = useState(0)
+/**
+ * Client-side route protection is a UX affordance, not a security control —
+ * every protected endpoint independently requires a valid JWT and scopes its
+ * query to that user's id. Deleting this component would make the app ugly,
+ * not insecure.
+ */
+function RequireAuth({ children }: { children: ReactNode }) {
+  const { user, initialising } = useAuth();
+  const location = useLocation();
 
-  return (
-    <>
-      <section id="center">
-        <div className="hero">
-          <img src={heroImg} className="base" width="170" height="179" alt="" />
-          <img src={reactLogo} className="framework" alt="React logo" />
-          <img src={viteLogo} className="vite" alt="Vite logo" />
-        </div>
-        <div>
-          <h1>Get started</h1>
-          <p>
-            Edit <code>src/App.tsx</code> and save to test <code>HMR</code>
-          </p>
-        </div>
-        <button
-          type="button"
-          className="counter"
-          onClick={() => setCount((count) => count + 1)}
-        >
-          Count is {count}
-        </button>
-      </section>
+  if (initialising) {
+    return (
+      <div className="stack stack--sm" aria-busy="true" aria-label="Loading">
+        <div className="skeleton" style={{ height: '4rem' }} />
+        <div className="skeleton" style={{ height: '12rem' }} />
+      </div>
+    );
+  }
 
-      <div className="ticks"></div>
+  if (user === null) return <Navigate to="/login" state={{ from: location }} replace />;
 
-      <section id="next-steps">
-        <div id="docs">
-          <svg className="icon" role="presentation" aria-hidden="true">
-            <use href="/icons.svg#documentation-icon"></use>
-          </svg>
-          <h2>Documentation</h2>
-          <p>Your questions, answered</p>
-          <ul>
-            <li>
-              <a href="https://vite.dev/" target="_blank">
-                <img className="logo" src={viteLogo} alt="" />
-                Explore Vite
-              </a>
-            </li>
-            <li>
-              <a href="https://react.dev/" target="_blank">
-                <img className="button-icon" src={reactLogo} alt="" />
-                Learn more
-              </a>
-            </li>
-          </ul>
-        </div>
-        <div id="social">
-          <svg className="icon" role="presentation" aria-hidden="true">
-            <use href="/icons.svg#social-icon"></use>
-          </svg>
-          <h2>Connect with us</h2>
-          <p>Join the Vite community</p>
-          <ul>
-            <li>
-              <a href="https://github.com/vitejs/vite" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#github-icon"></use>
-                </svg>
-                GitHub
-              </a>
-            </li>
-            <li>
-              <a href="https://chat.vite.dev/" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#discord-icon"></use>
-                </svg>
-                Discord
-              </a>
-            </li>
-            <li>
-              <a href="https://x.com/vite_js" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#x-icon"></use>
-                </svg>
-                X.com
-              </a>
-            </li>
-            <li>
-              <a href="https://bsky.app/profile/vite.dev" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#bluesky-icon"></use>
-                </svg>
-                Bluesky
-              </a>
-            </li>
-          </ul>
-        </div>
-      </section>
-
-      <div className="ticks"></div>
-      <section id="spacer"></section>
-    </>
-  )
+  return <>{children}</>;
 }
 
-export default App
+function Header() {
+  const { user, logout } = useAuth();
+
+  return (
+    <header className="app-header">
+      <div className="app-header__inner">
+        <div className="brand">
+          <span className="brand__mark" aria-hidden="true">
+            ₹
+          </span>
+          <span>Credits Wallet</span>
+        </div>
+
+        {user !== null && (
+          <>
+            <nav className="nav">
+              <NavLink to="/wallet" className={({ isActive }) => (isActive ? 'is-active' : '')}>
+                Wallet
+              </NavLink>
+              <NavLink to="/campaigns" className={({ isActive }) => (isActive ? 'is-active' : '')}>
+                Campaigns
+              </NavLink>
+            </nav>
+
+            <div className="cluster">
+              <span className="subtle">{user.email}</span>
+              <button type="button" className="btn btn--secondary btn--sm" onClick={logout}>
+                Log out
+              </button>
+            </div>
+          </>
+        )}
+      </div>
+    </header>
+  );
+}
+
+export default function App() {
+  return (
+    <BrowserRouter>
+      <AuthProvider>
+        <Header />
+        <main className="container">
+          <Routes>
+            <Route path="/login" element={<LoginPage />} />
+            <Route path="/signup" element={<SignupPage />} />
+            <Route
+              path="/wallet"
+              element={
+                <RequireAuth>
+                  <WalletPage />
+                </RequireAuth>
+              }
+            />
+            <Route
+              path="/campaigns"
+              element={
+                <RequireAuth>
+                  <CampaignsPage />
+                </RequireAuth>
+              }
+            />
+            <Route path="*" element={<Navigate to="/wallet" replace />} />
+          </Routes>
+        </main>
+      </AuthProvider>
+    </BrowserRouter>
+  );
+}

@@ -1,41 +1,41 @@
 // Database connection settings for sequelize-cli (migrations and seeders).
 //
-// The application does NOT read this file — it builds its own Sequelize
-// instance in src/config/database.ts. Both read the same environment
-// variables, so the environment is the single source of truth and the two
-// cannot drift apart. Duplicating six lines is a smaller cost than bridging
-// CommonJS and TypeScript to share one object.
-require('dotenv').config();
+// The application never reads this file — it builds its own Sequelize instance
+// in src/config/database.ts. Both now derive their connection settings from the
+// SAME place: src/config/env.ts.
+//
+// This file stays CommonJS because sequelize-cli `require()`s it directly and
+// cannot consume a TypeScript default export. It can still require a .ts module
+// because .sequelizerc registers ts-node BEFORE the CLI loads this file, so
+// env.ts is compiled on the fly.
+//
+// Reading env.ts rather than process.env directly buys three things:
+//   - one parser, so `DB_PORT=abc` fails the same way for the CLI as for the app
+//     (previously the CLI silently produced NaN);
+//   - one validation path, so `npm run migrate` with DB_NAME unset fails naming
+//     the variable instead of connecting to a database literally called
+//     "undefined";
+//   - no duplicated defaults that can drift apart.
+const { env } = require('../src/config/env');
 
 const shared = {
   dialect: 'mysql',
-  host: process.env.DB_HOST || '127.0.0.1',
-  port: Number(process.env.DB_PORT || 3306),
-  username: process.env.DB_USER,
-  password: process.env.DB_PASSWORD || '',
+  host: env.db.host,
+  port: env.db.port,
+  username: env.db.user,
+  password: env.db.password,
   logging: false,
 
-  // Record executed seeders in a SequelizeData table, exactly as migrations are
-  // recorded in SequelizeMeta. Without this, sequelize-cli's default is to
-  // track nothing, so `db:seed:all` would re-run every time and the second run
-  // would die on uq_modules_code. Tracking makes seeding idempotent at the
-  // tooling level and makes `db:seed:undo:all` meaningful.
+  // CLI-only concern, with no counterpart in the application: record executed
+  // seeders in a SequelizeData table, exactly as migrations are recorded in
+  // SequelizeMeta. Without it sequelize-cli tracks nothing, so `db:seed:all`
+  // would re-run every time and the second run would die on uq_modules_code.
+  // Tracking makes seeding idempotent and makes `db:seed:undo:all` meaningful.
   seederStorage: 'sequelize',
 };
 
 module.exports = {
-  development: {
-    ...shared,
-    database: process.env.DB_NAME,
-  },
-  // The test database is a real MySQL schema, not SQLite: the concurrency
-  // tests depend on SELECT ... FOR UPDATE row locks, which SQLite does not have.
-  test: {
-    ...shared,
-    database: process.env.DB_NAME_TEST || `${process.env.DB_NAME}_test`,
-  },
-  production: {
-    ...shared,
-    database: process.env.DB_NAME,
-  },
+  development: { ...shared, database: env.db.name },
+  test: { ...shared, database: env.db.nameTest },
+  production: { ...shared, database: env.db.name },
 };

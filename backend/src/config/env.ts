@@ -34,6 +34,8 @@ function intWithDefault(name: string, fallback: number): number {
   return parsed;
 }
 
+const databaseName = required('DB_NAME');
+
 export const env = {
   nodeEnv: withDefault('NODE_ENV', 'development'),
   port: intWithDefault('PORT', 4000),
@@ -42,7 +44,10 @@ export const env = {
   db: {
     host: withDefault('DB_HOST', '127.0.0.1'),
     port: intWithDefault('DB_PORT', 3306),
-    name: required('DB_NAME'),
+    name: databaseName,
+    // The test suite runs against a separate real MySQL schema — row locks do
+    // not exist in SQLite, so the concurrency tests need the real thing.
+    nameTest: withDefault('DB_NAME_TEST', `${databaseName}_test`),
     user: required('DB_USER'),
     // A blank password is legitimate on a local MySQL, so this is not `required`.
     password: withDefault('DB_PASSWORD', ''),

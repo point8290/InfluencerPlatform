@@ -1,7 +1,6 @@
 import { Balance, Currency, User, Wallet, sequelize } from "../../models";
 import {
   DECOY_PASSWORD_HASH,
-  MAX_PASSWORD_BYTES,
   hashPassword,
   verifyPassword,
 } from "../../lib/password";
@@ -16,6 +15,26 @@ import {
 import { isUniqueViolation } from "../../lib/isUniqueViolation";
 
 const MIN_PASSWORD_LENGTH = 8;
+
+/**
+ * 64 characters of printable ASCII is at most 64 bytes, which keeps every
+ * password comfortably inside bcrypt's 72-byte input limit. That is the whole
+ * reason this pair of rules exists together: the cap is stated in CHARACTERS,
+ * which is what a user can count, and the character-set restriction is what
+ * makes characters and bytes the same thing.
+ *
+ * The trade-off is deliberate and worth stating plainly: NIST SP 800-63B and
+ * OWASP both advise accepting Unicode in passwords, so this rule means a user
+ * cannot use their own script — a Devanagari or emoji passphrase is rejected.
+ * Chosen anyway for a simple, countable rule and an error message with no
+ * implementation detail in it. The alternative, which removes the restriction
+ * entirely, is to SHA-256 the password before bcrypt (as Django's
+ * BCryptSHA256PasswordHasher does) so the byte limit can never be reached.
+ */
+const MAX_PASSWORD_LENGTH = 64;
+
+/** Space (0x20) through tilde (0x7E) — printable ASCII, one byte each. */
+const PRINTABLE_ASCII = /^[\x20-\x7E]+$/;
 
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -67,20 +86,23 @@ export function validateSignupInput(body: unknown): {
   } else {
     password = rawPassword;
 
-    if (password.length < MIN_PASSWORD_LENGTH) {
+    if (
+      password.length < MIN_PASSWORD_LENGTH ||
+      password.length > MAX_PASSWORD_LENGTH
+    ) {
       details.push({
         field: "password",
-        message: `Password must be at least ${MIN_PASSWORD_LENGTH} characters.`,
+        message: `Password must be ${MIN_PASSWORD_LENGTH}-${MAX_PASSWORD_LENGTH} characters.`,
       });
     }
 
-    // bcrypt ignores everything past 72 bytes. Accepting a longer password
-    // would mean silently truncating it, so two different passwords would open
-    // the same account. Rejecting is honest; truncating is not.
-    if (Buffer.byteLength(password, "utf8") > MAX_PASSWORD_BYTES) {
+    // Keeps one character equal to one byte, which is what makes the length
+    // rule above sufficient to stay under bcrypt's 72-byte input limit.
+    if (!PRINTABLE_ASCII.test(password)) {
       details.push({
         field: "password",
-        message: `Password must be at most ${MAX_PASSWORD_BYTES} bytes.`,
+        message:
+          "Password may only contain letters, numbers, spaces and common punctuation.",
       });
     }
   }

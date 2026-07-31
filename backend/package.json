@@ -15,7 +15,7 @@
     "migrate:status": "sequelize-cli db:migrate:status",
     "seed": "sequelize-cli db:seed:all",
     "seed:undo": "sequelize-cli db:seed:undo:all",
-    "db:reset": "npm run migrate:undo:all && npm run migrate && npm run seed",
+    "db:reset": "npm run seed:undo && npm run migrate:undo:all && npm run migrate && npm run seed",
     "demo:checkout": "tsx scripts/create-checkout.ts"
   },
   "engines": {

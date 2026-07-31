@@ -62,14 +62,24 @@ export const isTest = env.nodeEnv === 'test';
  *
  * Steps 1-3 stand up the schema and authentication before any payment code
  * exists, and a server that refuses to start without keys it does not yet use
- * would be hostile to that build order. They are asserted here instead, at
- * first use, which still fails loudly and still names the missing variable.
+ * would be hostile to that build order. They are asserted at first use instead,
+ * which still fails loudly and still names the missing variable.
  *
- * Called from the Stripe client module in step 4.
+ * The two secrets are asserted SEPARATELY and never together, because they are
+ * needed by different code paths at different times:
+ *
+ *   - the API key is needed to CREATE a Checkout Session;
+ *   - the signing secret is needed to VERIFY an incoming webhook, and it does
+ *     not even exist until `stripe listen` prints it.
+ *
+ * Requiring both at once would mean neither path could run without the other —
+ * so you could not create a session until you had started a webhook listener
+ * you had no session to test with.
  */
-export function requireStripeConfig(): { secretKey: string; webhookSecret: string } {
-  return {
-    secretKey: required('STRIPE_SECRET_KEY'),
-    webhookSecret: required('STRIPE_WEBHOOK_SECRET'),
-  };
+export function requireStripeSecretKey(): string {
+  return required('STRIPE_SECRET_KEY');
+}
+
+export function requireStripeWebhookSecret(): string {
+  return required('STRIPE_WEBHOOK_SECRET');
 }

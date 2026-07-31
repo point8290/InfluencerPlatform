@@ -4,6 +4,8 @@ import { env } from './config/env';
 import { errorHandler, notFoundHandler } from './middleware/errorHandler';
 import { stripeWebhookRouter } from './modules/webhooks/webhook.routes';
 import { authRouter } from './modules/auth/auth.routes';
+import { currencyRouter } from './modules/currencies/currency.routes';
+import { paymentRouter } from './modules/payments/payment.routes';
 
 /**
  * Builds the Express application without binding a port, so tests can drive it
@@ -41,9 +43,10 @@ export function createApp(): express.Express {
   });
 
   app.use('/api/auth', authRouter);
+  app.use('/api/currencies', currencyRouter);
+  app.use('/api/payments', paymentRouter);
 
   // Feature routers are mounted here as they arrive:
-  //   step 4 — /api/payments, /api/currencies
   //   step 5 — /api/wallet, /api/campaigns
 
   // Must stay last: unmatched routes, then the single error responder.

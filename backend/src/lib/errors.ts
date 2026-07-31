@@ -48,6 +48,18 @@ export class ValidationError extends AppError {
   }
 }
 
+/**
+ * A 400 that is not a shape problem — the body parsed fine, but what it asked
+ * for is incoherent (a plan from a different currency, a currency the campaign's
+ * module is not bound to). These carry their own codes so a client can tell
+ * "malformed" from "contradictory".
+ */
+export class BadRequestError extends AppError {
+  constructor(code: ErrorCode, message: string) {
+    super(code, 400, message);
+  }
+}
+
 export class UnauthenticatedError extends AppError {
   constructor(message = 'Authentication is required.') {
     super('UNAUTHENTICATED', 401, message);

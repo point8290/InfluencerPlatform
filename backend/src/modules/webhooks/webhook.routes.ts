@@ -1,36 +1,35 @@
 import { Router } from 'express';
+import { asyncHandler } from '../../lib/asyncHandler';
+import { constructVerifiedEvent, processVerifiedEvent } from './webhook.service';
 
 export const stripeWebhookRouter = Router();
 
 /**
- * Placeholder for the Stripe webhook handler (step 4: signature verification,
- * two-tier payment resolution, and the grant transaction).
+ * The only path by which credits are ever created.
  *
- * The route exists from the first commit purely so that the raw-body mount
- * ordering in app.ts is established before anything can violate it. Adding the
- * route later would mean a stretch of history in which express.json() had
- * already consumed the request stream — and a signature check written against
- * that would have failed for reasons unrelated to the signature.
+ * Mounted in app.ts with express.raw() ahead of the global express.json(), so
+ * `req.body` here is the unparsed Buffer the signature was computed over.
  *
- * `details` reports whether the body arrived as raw bytes, which makes the
- * ordering verifiable with curl right now, before Stripe is involved at all.
+ * Order of operations is the whole point:
+ *   1. verify the signature   -> forged requests die before any DB access
+ *   2. check the event type   -> anything else is acknowledged and ignored
+ *   3. check payment_status   -> 'completed' alone never grants
+ *   4. grant, exactly once
+ *
+ * Response codes are covered in webhook.service.ts: everything verified is a
+ * 200 regardless of outcome, because Stripe retries non-2xx and only a
+ * transient failure deserves redelivery. A bad signature is the sole 400, and
+ * it is raised as an AppError so it leaves through the standard error envelope.
  */
-stripeWebhookRouter.post('/', (req, res) => {
-  const receivedRawBody = Buffer.isBuffer(req.body);
+stripeWebhookRouter.post(
+  '/',
+  asyncHandler(async (req, res) => {
+    const event = constructVerifiedEvent(req.body, req.headers['stripe-signature']);
 
-  res.status(501).json({
-    error: {
-      code: 'NOT_IMPLEMENTED',
-      message: 'Stripe webhook handling is implemented in step 4.',
-      details: [
-        {
-          field: 'raw_body',
-          message: receivedRawBody
-            ? 'Body received as a Buffer — raw mount is ahead of express.json().'
-            : `Body was parsed before reaching this route (got ${typeof req.body}). ` +
-              'The raw mount ordering in app.ts is broken.',
-        },
-      ],
-    },
-  });
-});
+    const outcome = await processVerifiedEvent(event);
+
+    // The outcome is echoed to make `stripe listen` output self-explanatory
+    // while tracing duplicate deliveries by hand.
+    res.status(200).json({ received: true, event: event.type, outcome });
+  }),
+);

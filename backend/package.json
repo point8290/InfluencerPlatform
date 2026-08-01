@@ -17,7 +17,8 @@
     "seed:undo": "sequelize-cli db:seed:undo:all",
     "demo:checkout": "tsx scripts/create-checkout.ts",
     "test": "cross-env NODE_ENV=test jest",
-    "test:watch": "cross-env NODE_ENV=test jest --watch"
+    "test:watch": "cross-env NODE_ENV=test jest --watch",
+    "demo:concurrent-fund": "tsx scripts/demo-concurrent-funding.ts"
   },
   "engines": {
     "node": ">=20"

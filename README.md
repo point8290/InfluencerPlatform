@@ -197,6 +197,29 @@ npm run demo:checkout -- --currency report --quantity 10
 
 ### Prove the graded behaviours by hand
 
+**Concurrent funding cannot over-spend.** You cannot click two buttons at the same instant, so this
+fires genuinely simultaneous requests and prints what the database did:
+
+```bash
+cd backend
+npm run demo:concurrent-fund
+```
+
+```
+balance          1000 Campaign Credits
+two requests     800 + 800 = 1600  (exceeds the balance)
+
+  Race A  ->  HTTP 200  funded
+  Race B  ->  HTTP 422  INSUFFICIENT_CREDITS
+
+  final balance            200
+  exactly one succeeded    YES
+  balance went negative    no
+  balance = sum(ledger)    YES
+```
+
+It creates its own throwaway user and cleans up after itself, so it never disturbs the demo account.
+
 **Duplicate webhook grants once.** Grab an `evt_` id from the `stripe listen` output after a payment
 and resend it:
 

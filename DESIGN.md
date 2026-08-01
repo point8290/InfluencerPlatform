@@ -81,6 +81,8 @@ erDiagram
         enum purchase_kind "plan | quantity"
         varchar stripe_session_id UK "cs_ - nullable, backfilled after session creation"
         varchar stripe_payment_intent_id UK "pi_ - nullable, backfilled from webhook"
+        varchar idempotency_key "UK with user_id - nullable, client-supplied"
+        varchar checkout_url "nullable - serves an idempotent replay without calling Stripe"
         bigint amount_paise "server-computed, frozen"
         bigint credits "server-computed, frozen"
         enum status "pending | paid | expired | failed"

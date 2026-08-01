@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, type FormEvent } from 'react';
+import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
 import {
   ApiError,
   api,
@@ -8,12 +8,25 @@ import {
 } from '../api/client';
 import { ToastStack, useToasts } from '../components/Toasts';
 
+/** Campaigns fetched per request. The API caps `limit` at 200. */
+const PAGE_SIZE = 25;
+const MAX_PAGE_SIZE = 200;
+
 export function CampaignsPage() {
   const { toasts, push } = useToasts();
 
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
+  const [campaignsTotal, setCampaignsTotal] = useState(0);
   const [balance, setBalance] = useState<WalletBalance | null>(null);
   const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
+
+  // Mirrors campaigns.length so a refresh reloads the window the user has
+  // opened rather than collapsing back to the first page.
+  const loadedCount = useRef(0);
+  useEffect(() => {
+    loadedCount.current = campaigns.length;
+  }, [campaigns]);
 
   const [name, setName] = useState('');
   const [createError, setCreateError] = useState<string | null>(null);
@@ -24,18 +37,43 @@ export function CampaignsPage() {
   const [errors, setErrors] = useState<Record<number, string>>({});
   const [fundingId, setFundingId] = useState<number | null>(null);
 
+  const fetchCampaigns = useCallback(
+    async (limit: number, offset: number, mode: 'replace' | 'append') => {
+      const page = await api.campaigns({ limit, offset });
+
+      setCampaignsTotal(page.total);
+      setCampaigns((current) => (mode === 'append' ? [...current, ...page.items] : page.items));
+    },
+    [],
+  );
+
+  /**
+   * Reloads the balance and the whole window the user has opened.
+   *
+   * Not just the first page: funding a campaign that sits on a later page would
+   * otherwise collapse the list and hide the row that just changed.
+   */
   const refresh = useCallback(async () => {
+    const windowSize = Math.min(Math.max(PAGE_SIZE, loadedCount.current), MAX_PAGE_SIZE);
+
+    const [, wallet] = await Promise.all([
+      fetchCampaigns(windowSize, 0, 'replace'),
+      api.wallet(),
+    ]);
+    setBalance(wallet.balances.find((entry) => entry.currency_code === 'campaign') ?? null);
+  }, [fetchCampaigns]);
+
+  const loadMore = useCallback(async () => {
+    setLoadingMore(true);
     try {
-      const [list, wallet] = await Promise.all([api.campaigns(), api.wallet()]);
-      setCampaigns(list.items);
-      setBalance(wallet.balances.find((entry) => entry.currency_code === 'campaign') ?? null);
+      await fetchCampaigns(PAGE_SIZE, loadedCount.current, 'append');
     } finally {
-      setLoading(false);
+      setLoadingMore(false);
     }
-  }, []);
+  }, [fetchCampaigns]);
 
   useEffect(() => {
-    void refresh();
+    void refresh().finally(() => setLoading(false));
   }, [refresh]);
 
   async function handleCreate(event: FormEvent) {
@@ -79,7 +117,7 @@ export function CampaignsPage() {
           ? caught.code === 'INSUFFICIENT_CREDITS'
             ? `Not enough Campaign Credits — you have ${formatCredits(balance?.balance ?? 0)}.`
             : caught.code === 'CAMPAIGN_ALREADY_FUNDED'
-              ? 'Already funded. A campaign can be funded at most once.'
+              ? 'This campaign has already been funded.'
               : caught.message
           : 'Could not fund the campaign.';
 
@@ -97,8 +135,7 @@ export function CampaignsPage() {
       <div className="page-header">
         <h1>Campaigns</h1>
         <p className="page-header__sub">
-          Funded with Campaign Credits only — the currency is resolved from the campaign&rsquo;s
-          module by the server, never chosen by this screen.
+          Create a campaign, then fund it with Campaign Credits.
         </p>
       </div>
 
@@ -111,7 +148,9 @@ export function CampaignsPage() {
           </div>
           <div className="summary__item">
             <span className="summary__label">Campaigns</span>
-            <span className="summary__value">{formatCredits(campaigns.length)}</span>
+            {/* The server's count, not the number of rows fetched — otherwise
+                this would understate as soon as the list is paginated. */}
+            <span className="summary__value">{formatCredits(campaignsTotal)}</span>
             <span className="subtle">{draftCount} awaiting funding</span>
           </div>
         </div>
@@ -120,7 +159,7 @@ export function CampaignsPage() {
           <div className="card__header">
             <div>
               <h2>New campaign</h2>
-              <p className="card__subtitle">Created as a draft. Fund it once, below.</p>
+              <p className="card__subtitle">New campaigns start as drafts.</p>
             </div>
           </div>
 
@@ -152,9 +191,7 @@ export function CampaignsPage() {
           <div className="card__header">
             <div>
               <h2>Your campaigns</h2>
-              <p className="card__subtitle">
-                Funded amounts are read from the ledger, not stored on the campaign.
-              </p>
+              <p className="card__subtitle">A campaign can be funded once.</p>
             </div>
           </div>
 
@@ -185,9 +222,10 @@ export function CampaignsPage() {
                   {campaigns.map((campaign, index) => (
                     <tr key={campaign.id}>
                       {/* Display serial, not the database id. Campaigns are
-                          listed newest-first, so counting down from the total
-                          makes the first campaign the user created number 1. */}
-                      <td className="ref">{campaigns.length - index}</td>
+                          listed newest-first, so counting down from the SERVER'S
+                          total makes the first one created number 1 — and keeps
+                          the numbering stable as further pages are loaded. */}
+                      <td className="ref">{campaignsTotal - index}</td>
                       <td>{campaign.name}</td>
                       <td>
                         <span className={`chip chip--${campaign.status}`}>{campaign.status}</span>
@@ -199,7 +237,7 @@ export function CampaignsPage() {
                       </td>
                       <td>
                         {campaign.status === 'funded' ? (
-                          <span className="subtle">Funded once — cannot be funded again</span>
+                          <span className="subtle">Already funded</span>
                         ) : (
                           <div className="stack stack--xs">
                             <div className="cluster">
@@ -238,6 +276,29 @@ export function CampaignsPage() {
                   ))}
                 </tbody>
               </table>
+            </div>
+          )}
+
+          {/* Without this, a campaign past the page boundary would vanish from
+              the list — and since the Fund control lives in its row, it would
+              become unfundable through the UI despite being a valid draft. */}
+          {campaigns.length > 0 && (
+            <div className="card__body cluster cluster--between">
+              <span className="subtle">
+                Showing {formatCredits(campaigns.length)} of {formatCredits(campaignsTotal)}
+              </span>
+              {campaigns.length < campaignsTotal && (
+                <button
+                  type="button"
+                  className="btn btn--secondary btn--sm"
+                  onClick={() => void loadMore()}
+                  disabled={loadingMore}
+                >
+                  {loadingMore
+                    ? 'Loading…'
+                    : `Load ${Math.min(PAGE_SIZE, campaignsTotal - campaigns.length)} more`}
+                </button>
+              )}
             </div>
           )}
         </section>

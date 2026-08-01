@@ -151,6 +151,56 @@ describe('concurrent campaign funding', () => {
       expect(secondLockerWasBlocked).toBe(true);
     });
 
+    it('UNIQUE(ledger.campaign_id) still rejects when the status check passes', async () => {
+      const user = await createUser(app);
+      await grantCredits(app, user.id, 'campaign', 1000);
+      const campaign = await createCampaign(app, user);
+
+      const wallet = await Wallet.findOne({ where: { userId: user.id } });
+      const currency = await Currency.findOne({ where: { code: 'campaign' } });
+
+      // Construct the one state the application check cannot detect: a funding
+      // row already exists for this campaign while campaigns.status is still
+      // 'draft'.
+      //
+      // This is deliberately unreachable through the API — concurrent requests
+      // serialize on the campaign row lock, and the second one's locking read
+      // returns the latest committed row (InnoDB's SELECT ... FOR UPDATE
+      // bypasses the REPEATABLE READ snapshot), so it sees 'funded' and the
+      // status check rejects it first. That means the other concurrency tests
+      // here would ALL still pass with uq_ledger_campaign_id deleted.
+      //
+      // Building the state by hand is the only way to prove the constraint is
+      // load-bearing rather than decorative. The fixture is intentionally
+      // inconsistent (balance is not decremented to match this row) because the
+      // point is the constraint, not the arithmetic.
+      await LedgerEntry.create({
+        walletId: wallet!.id,
+        currencyId: currency!.id,
+        delta: -5,
+        reason: 'campaign_funding',
+        campaignId: campaign.id,
+      });
+
+      const balanceBefore = await balanceOf(user.id, 'campaign');
+
+      const response = await request(app)
+        .post(`/api/campaigns/${campaign.id}/fund`)
+        .set(user.auth)
+        .send({ credits: 100 })
+        .expect(409);
+
+      expect(response.body.error.code).toBe('CAMPAIGN_ALREADY_FUNDED');
+
+      // The duplicate-key error rolled the whole transaction back: no second
+      // row, nothing spent, and the status transition did not happen either.
+      await expect(LedgerEntry.count({ where: { campaignId: campaign.id } })).resolves.toBe(1);
+      await expect(balanceOf(user.id, 'campaign')).resolves.toBe(balanceBefore);
+      await expect(
+        Campaign.findByPk(campaign.id).then((c) => c!.status),
+      ).resolves.toBe('draft');
+    });
+
     it('CHECK(balance >= 0) refuses a negative balance even in raw SQL', async () => {
       const user = await createUser(app);
       await grantCredits(app, user.id, 'campaign', 100);

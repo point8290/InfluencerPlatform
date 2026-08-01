@@ -342,7 +342,19 @@ Stripe is configured with:
 - `success_url` = `{FRONTEND_URL}/wallet?checkout=success&session_id={CHECKOUT_SESSION_ID}`
 - `cancel_url` = `{FRONTEND_URL}/wallet?checkout=cancelled`
 
-Errors — `400 VALIDATION_ERROR` (neither or both of `plan_id`/`quantity`, non-positive `quantity`), `400 PLAN_CURRENCY_MISMATCH`, `404 NOT_FOUND` (unknown currency or plan).
+**`Idempotency-Key` header — optional, strongly recommended.**
+
+A retried POST without one creates a second `payments` row *and* a second live Stripe session. No credits can be fabricated — the grant is keyed on `payments.id` and guarded by `UNIQUE(ledger.payment_id)` — but both sessions are payable, so one intent can produce two charges.
+
+Send an opaque token (a UUID) identifying the **intent**, not the attempt: the same key on every retry of one purchase.
+
+- Repeat with the same key and the same parameters → the original payment is returned, `201`, with `Idempotent-Replayed: true`. The body is byte-identical to the first response; a replay must be indistinguishable.
+- Repeat with the same key but *different* parameters → `409 IDEMPOTENCY_KEY_REUSED`. Silently returning the original would charge for something the caller did not just ask for.
+- Concurrent duplicates → one wins `UNIQUE(payments.user_id, idempotency_key)`; the others get `409 IDEMPOTENT_REQUEST_IN_PROGRESS` while the winner is still creating the session.
+
+Keys are scoped **per user**, never globally. A global key space would let one caller claim a value another later sends, and answer them with the first caller's payment and checkout URL.
+
+Errors — `400 VALIDATION_ERROR` (neither or both of `plan_id`/`quantity`, non-positive `quantity`, empty `Idempotency-Key`), `400 PLAN_CURRENCY_MISMATCH`, `404 NOT_FOUND` (unknown currency or plan), `409 IDEMPOTENCY_KEY_REUSED`, `409 IDEMPOTENT_REQUEST_IN_PROGRESS`.
 
 #### `GET /api/payments/session/:stripeSessionId`
 
@@ -468,6 +480,8 @@ Errors:
 | `NOT_FOUND` | 404 | Resource absent, or owned by another user |
 | `EMAIL_ALREADY_REGISTERED` | 409 | Signup with an email already in use |
 | `CAMPAIGN_ALREADY_FUNDED` | 409 | Campaign already left `draft` |
+| `IDEMPOTENCY_KEY_REUSED` | 409 | `Idempotency-Key` reused with different purchase parameters |
+| `IDEMPOTENT_REQUEST_IN_PROGRESS` | 409 | A concurrent request with the same key is still creating its session |
 | `INSUFFICIENT_CREDITS` | 422 | Well-formed request the current balance cannot satisfy |
 | `INTERNAL_ERROR` | 500 | Unexpected failure; details are logged, not returned |
 

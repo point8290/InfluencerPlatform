@@ -39,6 +39,18 @@ export class Payment extends Model<InferAttributes<Payment>, InferCreationAttrib
   declare purchaseKind: PurchaseKind;
   declare stripeSessionId: CreationOptional<string | null>;
   declare stripePaymentIntentId: CreationOptional<string | null>;
+
+  /**
+   * Client-supplied, unique per user. Present only when the caller asked for
+   * idempotency; NULL requests behave as they always did.
+   */
+  declare idempotencyKey: CreationOptional<string | null>;
+
+  /**
+   * Stored so an idempotent replay can be served without calling Stripe — the
+   * replay path must not depend on the service whose slowness caused the retry.
+   */
+  declare checkoutUrl: CreationOptional<string | null>;
   declare amountPaise: number;
   declare credits: number;
   declare status: CreationOptional<PaymentStatus>;
@@ -75,6 +87,14 @@ Payment.init(
     },
     stripeSessionId: {
       type: DataTypes.STRING(255),
+      allowNull: true,
+    },
+    idempotencyKey: {
+      type: DataTypes.STRING(255),
+      allowNull: true,
+    },
+    checkoutUrl: {
+      type: DataTypes.STRING(2048),
       allowNull: true,
     },
     stripePaymentIntentId: {

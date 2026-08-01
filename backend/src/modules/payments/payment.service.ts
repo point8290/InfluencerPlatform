@@ -1,8 +1,9 @@
 import { env } from '../../config/env';
 import { getStripe } from '../../lib/stripe';
-import { NotFoundError } from '../../lib/errors';
+import { ConflictError, NotFoundError, ValidationError } from '../../lib/errors';
+import { isUniqueViolation } from '../../lib/isUniqueViolation';
 import { Currency, Payment } from '../../models';
-import { quotePurchase } from './pricing.service';
+import { quotePurchase, type PriceQuote } from './pricing.service';
 
 /**
  * Every platform price is quoted in Indian paise, and Stripe's smallest-unit
@@ -12,8 +13,104 @@ import { quotePurchase } from './pricing.service';
  */
 const STRIPE_CURRENCY = 'inr';
 
-export async function createCheckoutSession(userId: number, body: unknown): Promise<unknown> {
+const MAX_IDEMPOTENCY_KEY_LENGTH = 255;
+
+export interface CheckoutSessionResult {
+  /** True when an existing payment was returned instead of a new one created. */
+  replayed: boolean;
+  payload: {
+    payment_id: number;
+    stripe_session_id: string | null;
+    checkout_url: string;
+    credits: number;
+    amount_paise: number;
+  };
+}
+
+function readIdempotencyKey(raw: unknown): string | null {
+  if (raw === undefined || raw === null) return null;
+
+  if (typeof raw !== 'string' || raw.trim() === '') {
+    throw new ValidationError('Idempotency-Key must be a non-empty string.', [
+      { field: 'Idempotency-Key', message: 'Header present but empty.' },
+    ]);
+  }
+
+  const key = raw.trim();
+  if (key.length > MAX_IDEMPOTENCY_KEY_LENGTH) {
+    throw new ValidationError('Idempotency-Key is too long.', [
+      {
+        field: 'Idempotency-Key',
+        message: `Must be at most ${MAX_IDEMPOTENCY_KEY_LENGTH} characters.`,
+      },
+    ]);
+  }
+  // Format is deliberately not validated beyond length — the key is an opaque
+  // client token, exactly as it is in Stripe's own API.
+  return key;
+}
+
+/**
+ * Answers a repeat request with the payment the first one created.
+ *
+ * Two things are refused rather than papered over:
+ *
+ *   - A key reused with DIFFERENT parameters. Returning the original silently
+ *     would charge for something the caller did not just ask for; this is
+ *     almost always a client bug (a key generated once and reused forever) and
+ *     it should be loud. Stripe behaves the same way.
+ *   - A key whose payment has no checkout URL yet. That means a concurrent
+ *     request won the unique index and is still mid-flight with Stripe, so
+ *     there is nothing coherent to return. The caller is told to retry rather
+ *     than handed a half-built response.
+ */
+function replayExistingPayment(existing: Payment, quote: PriceQuote): CheckoutSessionResult {
+  const matchesOriginalRequest =
+    existing.currencyId === quote.currency.id &&
+    existing.credits === quote.credits &&
+    existing.amountPaise === quote.amountPaise;
+
+  if (!matchesOriginalRequest) {
+    throw new ConflictError(
+      'IDEMPOTENCY_KEY_REUSED',
+      'This Idempotency-Key was already used for a different purchase. ' +
+        'Generate a new key for a new purchase.',
+    );
+  }
+
+  if (existing.checkoutUrl === null) {
+    throw new ConflictError(
+      'IDEMPOTENT_REQUEST_IN_PROGRESS',
+      'A request with this Idempotency-Key is still being processed. Retry shortly.',
+    );
+  }
+
+  return {
+    replayed: true,
+    payload: {
+      payment_id: existing.id,
+      stripe_session_id: existing.stripeSessionId,
+      checkout_url: existing.checkoutUrl,
+      credits: existing.credits,
+      amount_paise: existing.amountPaise,
+    },
+  };
+}
+
+export async function createCheckoutSession(
+  userId: number,
+  body: unknown,
+  rawIdempotencyKey?: unknown,
+): Promise<CheckoutSessionResult> {
   const quote = await quotePurchase(body);
+  const idempotencyKey = readIdempotencyKey(rawIdempotencyKey);
+
+  // Fast path. Scoped by userId as well as the key — a key is unique per user,
+  // never globally, so one caller's key can never surface another's payment.
+  if (idempotencyKey !== null) {
+    const existing = await Payment.findOne({ where: { userId, idempotencyKey } });
+    if (existing !== null) return replayExistingPayment(existing, quote);
+  }
 
   // ── 1. THE LOCAL RECORD, BEFORE THE MONEY-MOVING OBJECT ─────────────────
   //
@@ -30,15 +127,29 @@ export async function createCheckoutSession(userId: number, body: unknown): Prom
   //
   // stripeSessionId is deliberately NULL here — the session does not exist yet.
   // That is why the column is nullable-unique in the migration.
-  const payment = await Payment.create({
-    userId,
-    currencyId: quote.currency.id,
-    planId: quote.plan?.id ?? null,
-    purchaseKind: quote.purchaseKind,
-    credits: quote.credits,
-    amountPaise: quote.amountPaise,
-    status: 'pending',
-  });
+  let payment: Payment;
+  try {
+    payment = await Payment.create({
+      userId,
+      currencyId: quote.currency.id,
+      planId: quote.plan?.id ?? null,
+      purchaseKind: quote.purchaseKind,
+      credits: quote.credits,
+      amountPaise: quote.amountPaise,
+      status: 'pending',
+      idempotencyKey,
+    });
+  } catch (error) {
+    // A concurrent request with the same key won the unique index between our
+    // fast-path read above and this insert. The index is the guarantee; the
+    // read was only an optimisation. Losing the race is a normal outcome, so
+    // resolve to whatever the winner created.
+    if (isUniqueViolation(error, 'uq_payments_user_idempotency_key') && idempotencyKey !== null) {
+      const winner = await Payment.findOne({ where: { userId, idempotencyKey } });
+      if (winner !== null) return replayExistingPayment(winner, quote);
+    }
+    throw error;
+  }
 
   // ── 2. THE STRIPE SESSION, CARRYING OUR ID ──────────────────────────────
   //
@@ -83,8 +194,16 @@ export async function createCheckoutSession(userId: number, body: unknown): Prom
   // metadata.payment_id and heal this column during the grant. Failing the
   // request would be worse: the caller would see an error for a session that
   // is live and will charge them.
+  if (session.url === null) {
+    throw new Error(`Stripe returned session ${session.id} without a checkout URL.`);
+  }
+
   try {
-    await payment.update({ stripeSessionId: session.id });
+    // checkoutUrl is written in the same update: it is what lets an idempotent
+    // replay be answered from our own database, and its presence is also the
+    // signal that this request finished — a concurrent caller that finds it
+    // still NULL knows the winner is mid-flight.
+    await payment.update({ stripeSessionId: session.id, checkoutUrl: session.url });
   } catch (error) {
     console.error(
       `[payments] failed to backfill stripe_session_id for payment ${payment.id}; ` +
@@ -93,18 +212,17 @@ export async function createCheckoutSession(userId: number, body: unknown): Prom
     );
   }
 
-  if (session.url === null) {
-    throw new Error(`Stripe returned session ${session.id} without a checkout URL.`);
-  }
-
   return {
-    payment_id: payment.id,
-    stripe_session_id: session.id,
-    checkout_url: session.url,
-    // Echoed for display only. Both were computed server-side and are now
-    // frozen on the payment row.
-    credits: quote.credits,
-    amount_paise: quote.amountPaise,
+    replayed: false,
+    payload: {
+      payment_id: payment.id,
+      stripe_session_id: session.id,
+      checkout_url: session.url,
+      // Echoed for display only. Both were computed server-side and are now
+      // frozen on the payment row.
+      credits: quote.credits,
+      amount_paise: quote.amountPaise,
+    },
   };
 }
 

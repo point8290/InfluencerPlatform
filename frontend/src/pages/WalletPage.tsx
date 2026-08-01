@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type FormEvent,
+} from 'react';
 import { useSearchParams } from 'react-router-dom';
 import {
   ApiError,
@@ -14,6 +21,10 @@ import { ToastStack, useToasts } from '../components/Toasts';
 /** Poll for at most this long before falling back to a manual refresh. */
 const POLL_INTERVAL_MS = 1_000;
 const POLL_MAX_ATTEMPTS = 15;
+
+/** Ledger rows fetched per request. The API caps `limit` at 200. */
+const PAGE_SIZE = 25;
+const MAX_PAGE_SIZE = 200;
 
 /**
  * Modules whose spending is actually implemented.
@@ -34,9 +45,18 @@ export function WalletPage() {
   const [currencies, setCurrencies] = useState<Currency[]>([]);
   const [wallet, setWallet] = useState<Wallet | null>(null);
   const [ledger, setLedger] = useState<LedgerItem[]>([]);
+  const [ledgerTotal, setLedgerTotal] = useState(0);
   const [ledgerFilter, setLedgerFilter] = useState('');
   const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
+
+  // Mirrors ledger.length, so a refresh can reload exactly the window the user
+  // has opened without the fetch callback depending on the list it sets.
+  const loadedCount = useRef(0);
+  useEffect(() => {
+    loadedCount.current = ledger.length;
+  }, [ledger]);
 
   const [currencyCode, setCurrencyCode] = useState('campaign');
   const [purchaseMode, setPurchaseMode] = useState<'plan' | 'quantity'>('plan');
@@ -46,31 +66,87 @@ export function WalletPage() {
   const [redirecting, setRedirecting] = useState(false);
 
   const [pollState, setPollState] = useState<PollState>('idle');
-  const [pollAttempt, setPollAttempt] = useState(0);
 
+  /**
+   * Identifies the current purchase INTENT, not the current attempt.
+   *
+   * Generated on first submit and kept if that submit fails, so a retry — after
+   * a timeout, or a second click once the button re-enables — resolves to the
+   * same Stripe session rather than creating a second payable one. Cleared
+   * whenever the purchase parameters change, because that is a different intent
+   * and deserves its own key.
+   */
+  const purchaseIdempotencyKey = useRef<string | null>(null);
+
+  useEffect(() => {
+    purchaseIdempotencyKey.current = null;
+  }, [currencyCode, purchaseMode, planId, quantity]);
+
+  const refreshWallet = useCallback(async () => {
+    setWallet(await api.wallet());
+  }, []);
+
+  const fetchLedger = useCallback(
+    async (limit: number, offset: number, mode: 'replace' | 'append') => {
+      const page = await api.ledger({
+        currencyCode: ledgerFilter === '' ? undefined : ledgerFilter,
+        limit,
+        offset,
+      });
+
+      // `total` is the authoritative count, independent of how much has been
+      // fetched — it drives both the "showing N of M" line and the row serials.
+      setLedgerTotal(page.total);
+      setLedger((current) => (mode === 'append' ? [...current, ...page.items] : page.items));
+    },
+    [ledgerFilter],
+  );
+
+  /**
+   * Reloads the balances and the whole ledger window the user has opened.
+   *
+   * Deliberately not just the first page: after funding a campaign from a
+   * later page, collapsing back to page 1 would hide the row that just changed.
+   */
   const refresh = useCallback(async () => {
+    const windowSize = Math.min(Math.max(PAGE_SIZE, loadedCount.current), MAX_PAGE_SIZE);
+
     try {
-      const [walletData, ledgerData] = await Promise.all([
-        api.wallet(),
-        api.ledger(ledgerFilter === '' ? undefined : ledgerFilter),
-      ]);
-      setWallet(walletData);
-      setLedger(ledgerData.items);
+      await Promise.all([refreshWallet(), fetchLedger(windowSize, 0, 'replace')]);
       setLoadError(null);
     } catch (caught) {
       setLoadError(caught instanceof ApiError ? caught.message : 'Could not load the wallet.');
-    } finally {
-      setLoading(false);
     }
-  }, [ledgerFilter]);
+  }, [refreshWallet, fetchLedger]);
+
+  const loadMore = useCallback(async () => {
+    setLoadingMore(true);
+    try {
+      await fetchLedger(PAGE_SIZE, loadedCount.current, 'append');
+    } catch (caught) {
+      setLoadError(caught instanceof ApiError ? caught.message : 'Could not load more entries.');
+    } finally {
+      setLoadingMore(false);
+    }
+  }, [fetchLedger]);
 
   useEffect(() => {
     api.currencies().then(setCurrencies).catch(() => setLoadError('Could not load currencies.'));
   }, []);
 
+  // Mount, and every filter change. A filter change resets to the first page
+  // rather than preserving a window that belonged to a different filter.
   useEffect(() => {
-    void refresh();
-  }, [refresh]);
+    loadedCount.current = 0;
+    setLoading(true);
+
+    Promise.all([refreshWallet(), fetchLedger(PAGE_SIZE, 0, 'replace')])
+      .then(() => setLoadError(null))
+      .catch((caught: unknown) =>
+        setLoadError(caught instanceof ApiError ? caught.message : 'Could not load the wallet.'),
+      )
+      .finally(() => setLoading(false));
+  }, [refreshWallet, fetchLedger]);
 
   useEffect(() => {
     const currency = currencies.find((entry) => entry.code === currencyCode);
@@ -106,7 +182,6 @@ export function WalletPage() {
     const poll = async (): Promise<void> => {
       if (cancelled) return;
       attempts += 1;
-      setPollAttempt(attempts);
 
       try {
         const payment = await api.paymentStatus(sessionId);
@@ -152,9 +227,11 @@ export function WalletPage() {
     return {
       spendable: balances.find((balance) => balance.currency_code === 'campaign')?.balance ?? 0,
       all: balances.reduce((sum, balance) => sum + balance.balance, 0),
-      movements: ledger.length,
+      // The server's count, not the number of rows fetched — otherwise this
+      // would understate as soon as the list is paginated.
+      movements: ledgerTotal,
     };
-  }, [wallet, ledger]);
+  }, [wallet, ledgerTotal]);
 
   // Display only. The server recomputes this from seeded configuration and its
   // number is what gets charged — this is a preview, not an input.
@@ -168,11 +245,15 @@ export function WalletPage() {
     setBuyError([]);
     setRedirecting(true);
 
+    // Reused if this submit fails, so a retry returns the original session.
+    purchaseIdempotencyKey.current ??= crypto.randomUUID();
+
     try {
       const session = await api.createCheckoutSession(
         purchaseMode === 'plan'
           ? { currency_code: currencyCode, plan_id: planId ?? 0 }
           : { currency_code: currencyCode, quantity },
+        purchaseIdempotencyKey.current,
       );
       window.location.href = session.checkout_url;
     } catch (caught) {
@@ -194,13 +275,13 @@ export function WalletPage() {
     setPollState('idle');
   }
 
+  const hasMore = ledger.length < ledgerTotal;
+
   return (
     <>
       <div className="page-header">
         <h1>Wallet</h1>
-        <p className="page-header__sub">
-          Three separate credit currencies, each spendable only in its own module.
-        </p>
+        <p className="page-header__sub">Buy credits and track every purchase and spend.</p>
       </div>
 
       <div className="stack">
@@ -212,27 +293,27 @@ export function WalletPage() {
           >
             {pollState === 'polling' && (
               <>
-                <strong>Payment received — waiting for Stripe to confirm.</strong>
-                <p>
-                  Credits are granted only by a verified webhook, never by this redirect. Checking…
-                  ({pollAttempt}/{POLL_MAX_ATTEMPTS})
-                </p>
+                <strong>Confirming your payment…</strong>
+                <p>This usually takes a few seconds. Your credits will appear below.</p>
               </>
             )}
-            {pollState === 'paid' && <strong>Credits granted. Your balance is updated below.</strong>}
+            {pollState === 'paid' && <strong>Credits added. Your balance is updated below.</strong>}
             {pollState === 'cancelled' && <strong>Checkout cancelled — nothing was charged.</strong>}
             {pollState === 'timed-out' && (
               <>
-                <strong>Still waiting for confirmation.</strong>
+                <strong>This is taking longer than usual.</strong>
                 <p>
-                  If you completed payment, credits appear once the webhook is processed. Check that{' '}
-                  <code>stripe listen</code> is running, then refresh.
+                  If your payment went through, your credits will appear as soon as it is confirmed.
                 </p>
               </>
             )}
             <div className="cluster">
               {pollState === 'timed-out' && (
-                <button type="button" className="btn btn--secondary btn--sm" onClick={() => void refresh()}>
+                <button
+                  type="button"
+                  className="btn btn--secondary btn--sm"
+                  onClick={() => void refresh()}
+                >
                   Refresh
                 </button>
               )}
@@ -257,9 +338,9 @@ export function WalletPage() {
             <span className="subtle">across 3 currencies</span>
           </div>
           <div className="summary__item">
-            <span className="summary__label">Movements</span>
+            <span className="summary__label">Activity</span>
             <span className="summary__value">{formatCredits(totals.movements)}</span>
-            <span className="subtle">ledger entries</span>
+            <span className="subtle">purchases and spends</span>
           </div>
         </div>
 
@@ -268,7 +349,9 @@ export function WalletPage() {
             <div className="card__header">
               <div>
                 <h2>Balances</h2>
-                <p className="card__subtitle">Each currency is bound to exactly one module.</p>
+                <p className="card__subtitle">
+                  Each credit type is used in one area of the platform.
+                </p>
               </div>
             </div>
 
@@ -292,12 +375,12 @@ export function WalletPage() {
                           <span className="balance__detail">
                             {currency !== undefined &&
                               `${formatRupees(currency.price_paise_per_credit)}/credit · `}
-                            {currency?.module.name ?? '—'} module
+                            {currency?.module.name ?? '—'}
                           </span>
                         </div>
                         <div className="cluster">
                           <span className={`chip chip--${spendable ? 'spendable' : 'locked'}`}>
-                            {spendable ? 'Spendable' : 'Module not built'}
+                            {spendable ? 'Spendable' : 'Coming soon'}
                           </span>
                           <span className="balance__amount">
                             <span className="balance__value">{formatCredits(balance.balance)}</span>
@@ -315,7 +398,7 @@ export function WalletPage() {
             <div className="card__header">
               <div>
                 <h2>Buy credits</h2>
-                <p className="card__subtitle">Priced by the server, then paid through Stripe.</p>
+                <p className="card__subtitle">Pay securely with Stripe.</p>
               </div>
             </div>
 
@@ -374,7 +457,9 @@ export function WalletPage() {
                         </option>
                       ))}
                     </select>
-                    <span className="field__hint">Bundles are discounted against the per-credit rate.</span>
+                    <span className="field__hint">
+                      Bundles are discounted against the per-credit rate.
+                    </span>
                   </div>
                 ) : (
                   <div className="field">
@@ -393,12 +478,9 @@ export function WalletPage() {
                 )}
 
                 <div className="cluster cluster--between">
-                  <span className="muted">Preview</span>
+                  <span className="muted">Total</span>
                   <strong style={{ fontSize: '1.125rem' }}>{formatRupees(previewPaise)}</strong>
                 </div>
-                <p className="subtle">
-                  The server recomputes this from seeded configuration; its figure is what gets charged.
-                </p>
 
                 {buyError.length > 0 && (
                   <div className="alert alert--error">
@@ -419,13 +501,13 @@ export function WalletPage() {
         <section className="card">
           <div className="card__header">
             <div>
-              <h2>Ledger</h2>
+              <h2>Activity</h2>
               <p className="card__subtitle">
-                Append-only. For each currency, these deltas sum to the balance above.
+                Every credit purchase and campaign funding, newest first.
               </p>
             </div>
             <select
-              aria-label="Filter ledger by currency"
+              aria-label="Filter activity by credit type"
               value={ledgerFilter}
               onChange={(event) => setLedgerFilter(event.target.value)}
               style={{ width: 'auto' }}
@@ -441,50 +523,70 @@ export function WalletPage() {
 
           {ledger.length === 0 ? (
             <div className="empty">
-              <p className="empty__title">No movements yet</p>
-              <p>Buy credits above and they will appear here once Stripe confirms the payment.</p>
+              <p className="empty__title">No activity yet</p>
+              <p>Buy credits above and your purchases will appear here.</p>
             </div>
           ) : (
-            <div className="table-wrap">
-              <table>
-                <thead>
-                  <tr>
-                    <th>#</th>
-                    <th>Currency</th>
-                    <th className="numeric">Change</th>
-                    <th>Reason</th>
-                    <th>Reference</th>
-                    <th>When</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {ledger.map((item, index) => (
-                    <tr key={item.id}>
-                      {/* A display serial, not the database id. Entries are
-                          returned newest-first, so counting down from the
-                          loaded count makes the OLDEST entry 1 — which is how a
-                          ledger reads. The database id still appears in the
-                          Reference column of the rows that have one. */}
-                      <td className="ref">{ledger.length - index}</td>
-                      <td>{currencyByCode.get(item.currency_code)?.name ?? item.currency_code}</td>
-                      <td className={`numeric ${item.delta > 0 ? 'delta--in' : 'delta--out'}`}>
-                        {item.delta > 0 ? '+' : ''}
-                        {formatCredits(item.delta)}
-                      </td>
-                      <td>{item.reason === 'purchase' ? 'Purchase' : 'Campaign funding'}</td>
-                      <td className="ref">
-                        {item.payment_id !== null
-                          ? `payment #${item.payment_id}`
-                          : item.campaign_id !== null
-                            ? `campaign #${item.campaign_id}`
-                            : '—'}
-                      </td>
-                      <td className="subtle">{new Date(item.created_at).toLocaleString()}</td>
+            <>
+              <div className="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>#</th>
+                      <th>Currency</th>
+                      <th className="numeric">Change</th>
+                      <th>Reason</th>
+                      <th>Reference</th>
+                      <th>When</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+                  </thead>
+                  <tbody>
+                    {ledger.map((item, index) => (
+                      <tr key={item.id}>
+                        {/* A display serial, not the database id. Entries come
+                            back newest-first, so counting down from the SERVER'S
+                            total makes the oldest entry 1 — and keeps the
+                            numbering stable as further pages are loaded. */}
+                        <td className="ref">{ledgerTotal - index}</td>
+                        <td>{currencyByCode.get(item.currency_code)?.name ?? item.currency_code}</td>
+                        <td className={`numeric ${item.delta > 0 ? 'delta--in' : 'delta--out'}`}>
+                          {item.delta > 0 ? '+' : ''}
+                          {formatCredits(item.delta)}
+                        </td>
+                        <td>{item.reason === 'purchase' ? 'Purchase' : 'Campaign funding'}</td>
+                        <td className="ref">
+                          {item.payment_id !== null
+                            ? `payment #${item.payment_id}`
+                            : item.campaign_id !== null
+                              ? `campaign #${item.campaign_id}`
+                              : '—'}
+                        </td>
+                        <td className="subtle">{new Date(item.created_at).toLocaleString()}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
+              {/* Without this the list would silently stop at the page size, and
+                  the visible deltas would not sum to the balance shown above —
+                  which is exactly the invariant this screen invites you to check. */}
+              <div className="card__body cluster cluster--between">
+                <span className="subtle">
+                  Showing {formatCredits(ledger.length)} of {formatCredits(ledgerTotal)}
+                </span>
+                {hasMore && (
+                  <button
+                    type="button"
+                    className="btn btn--secondary btn--sm"
+                    onClick={() => void loadMore()}
+                    disabled={loadingMore}
+                  >
+                    {loadingMore ? 'Loading…' : `Load ${Math.min(PAGE_SIZE, ledgerTotal - ledger.length)} more`}
+                  </button>
+                )}
+              </div>
+            </>
           )}
         </section>
       </div>

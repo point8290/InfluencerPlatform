@@ -33,7 +33,7 @@ function AuthForm({ mode }: { mode: 'login' | 'signup' }) {
         // failed" and "password must be 8-64 characters".
         setFieldErrors(caught.details.map((detail) => detail.message));
       } else {
-        setError('Could not reach the server. Is the backend running on port 4000?');
+        setError('Could not reach the server. Check your connection and try again.');
       }
     } finally {
       setSubmitting(false);
@@ -47,8 +47,8 @@ function AuthForm({ mode }: { mode: 'login' | 'signup' }) {
           <h1>{isSignup ? 'Create an account' : 'Welcome back'}</h1>
           <p className="card__subtitle">
             {isSignup
-              ? 'Your wallet is created with all three currencies at zero.'
-              : 'Log in to view balances and fund campaigns.'}
+              ? 'Sign up to buy credits and fund campaigns.'
+              : 'Log in to view your balances and fund campaigns.'}
           </p>
         </div>
       </div>

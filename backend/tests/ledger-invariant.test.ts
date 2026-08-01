@@ -1,7 +1,7 @@
 import type { Express } from 'express';
 import request from 'supertest';
 import { createApp } from '../src/app';
-import { Balance, Currency, LedgerEntry, Wallet } from '../src/models';
+import { Balance, Currency, LedgerEntry, Payment, Wallet, sequelize } from '../src/models';
 import { assertUsingTestDatabase, closeDatabase, resetUserData } from './helpers/db';
 import { balanceOf, createCampaign, createUser, grantCredits } from './helpers/factories';
 
@@ -156,6 +156,179 @@ describe('ledger is the source of truth', () => {
     expect(spend!.paymentId).toBeNull();
 
     await expectLedgerMatchesBalances();
+  });
+
+  describe('chk_ledger_reference_exclusive', () => {
+    /**
+     * The exclusive arc is only "exclusive" if the database says so. These
+     * assert the shapes the application never writes but nothing previously
+     * stopped — a ledger row is append-only, so an incoherent one is permanent.
+     */
+    async function fixture() {
+      const user = await createUser(app);
+      const payment = await grantCredits(app, user.id, 'campaign', 500);
+      const campaign = await createCampaign(app, user);
+
+      const wallet = (await Wallet.findOne({ where: { userId: user.id } }))!;
+      const currency = (await Currency.findOne({ where: { code: 'campaign' } }))!;
+
+      return { user, payment, campaign, walletId: wallet.id, currencyId: currency.id };
+    }
+
+    it('rejects a row referencing neither a payment nor a campaign', async () => {
+      const { walletId, currencyId } = await fixture();
+
+      await expect(
+        LedgerEntry.create({ walletId, currencyId, delta: 10, reason: 'purchase' }),
+      ).rejects.toThrow();
+    });
+
+    it('rejects a row referencing both', async () => {
+      const { walletId, currencyId, payment, campaign } = await fixture();
+
+      await expect(
+        LedgerEntry.create({
+          walletId,
+          currencyId,
+          delta: -10,
+          reason: 'campaign_funding',
+          paymentId: payment.id,
+          campaignId: campaign.id,
+        }),
+      ).rejects.toThrow();
+    });
+
+    it('rejects a reason that disagrees with the populated reference', async () => {
+      const { walletId, currencyId, campaign } = await fixture();
+
+      await expect(
+        LedgerEntry.create({
+          walletId,
+          currencyId,
+          delta: 10,
+          // A purchase cannot be evidenced by a campaign.
+          reason: 'purchase',
+          campaignId: campaign.id,
+        }),
+      ).rejects.toThrow();
+    });
+
+    it('still accepts the two legitimate shapes', async () => {
+      const { walletId, currencyId, campaign } = await fixture();
+
+      // Funding row: campaign set, payment null.
+      await expect(
+        LedgerEntry.create({
+          walletId,
+          currencyId,
+          delta: -10,
+          reason: 'campaign_funding',
+          campaignId: campaign.id,
+        }),
+      ).resolves.toBeDefined();
+
+      // The purchase shape is already exercised by grantCredits in fixture().
+      await expect(
+        LedgerEntry.count({ where: { walletId, reason: 'purchase' } }),
+      ).resolves.toBe(1);
+    });
+
+    it('still refuses to delete a payment a ledger row references', async () => {
+      const { payment } = await fixture();
+
+      // The FKs were rewritten without ON DELETE RESTRICT to make the CHECK
+      // legal — MySQL forbids referential actions on columns used in a CHECK.
+      // InnoDB's default is RESTRICT anyway, so this must still fail. If it
+      // ever passes, that rewrite quietly cost real referential integrity.
+      await expect(
+        sequelize.query('DELETE FROM payments WHERE id = ?', { replacements: [payment.id] }),
+      ).rejects.toThrow();
+
+      await expect(Payment.findByPk(payment.id)).resolves.not.toBeNull();
+    });
+  });
+
+  describe('pagination', () => {
+    /**
+     * The UI reads `total` to show "showing N of M" and to number rows, and
+     * pages with limit/offset. Before those controls existed the frontend
+     * silently rendered only the first page — the balance stayed correct while
+     * the list was incomplete, which is the worst way for this to be wrong,
+     * because the wallet screen invites you to check that the deltas sum to the
+     * balance.
+     */
+    it('pages without gaps or overlaps, and reports the true total', async () => {
+      const user = await createUser(app);
+      for (let purchase = 0; purchase < 5; purchase++) {
+        await grantCredits(app, user.id, 'campaign', 10);
+      }
+
+      const pageOne = await request(app)
+        .get('/api/wallet/ledger?limit=2&offset=0')
+        .set(user.auth)
+        .expect(200);
+      const pageTwo = await request(app)
+        .get('/api/wallet/ledger?limit=2&offset=2')
+        .set(user.auth)
+        .expect(200);
+      const pageThree = await request(app)
+        .get('/api/wallet/ledger?limit=2&offset=4')
+        .set(user.auth)
+        .expect(200);
+
+      expect(pageOne.body.items).toHaveLength(2);
+      expect(pageTwo.body.items).toHaveLength(2);
+      expect(pageThree.body.items).toHaveLength(1);
+
+      // `total` is the full count regardless of how much was fetched — this is
+      // what the "showing N of M" line and the row serials depend on.
+      for (const page of [pageOne, pageTwo, pageThree]) {
+        expect(page.body.total).toBe(5);
+      }
+
+      const ids = [...pageOne.body.items, ...pageTwo.body.items, ...pageThree.body.items].map(
+        (item: { id: number }) => item.id,
+      );
+      expect(new Set(ids).size).toBe(5);
+    });
+
+    it('clamps an oversized limit rather than rejecting it', async () => {
+      const user = await createUser(app);
+      await grantCredits(app, user.id, 'campaign', 10);
+
+      const response = await request(app)
+        .get('/api/wallet/ledger?limit=5000')
+        .set(user.auth)
+        .expect(200);
+
+      // Clamped to MAX_LIMIT, so a client cannot ask for the whole table.
+      expect(response.body.limit).toBe(200);
+    });
+
+    it('paginates campaigns too, which is what keeps them fundable', async () => {
+      const user = await createUser(app);
+      for (let index = 0; index < 3; index++) {
+        await createCampaign(app, user, `Campaign ${index}`);
+      }
+
+      const firstPage = await request(app)
+        .get('/api/campaigns?limit=2&offset=0')
+        .set(user.auth)
+        .expect(200);
+      const secondPage = await request(app)
+        .get('/api/campaigns?limit=2&offset=2')
+        .set(user.auth)
+        .expect(200);
+
+      expect(firstPage.body.items).toHaveLength(2);
+      expect(secondPage.body.items).toHaveLength(1);
+      expect(firstPage.body.total).toBe(3);
+
+      // A campaign only reachable on a later page must still be a real,
+      // fundable campaign — the Fund control lives in its row.
+      const stranded = secondPage.body.items[0] as { id: number; status: string };
+      expect(stranded.status).toBe('draft');
+    });
   });
 
   it('exposes the same numbers through the wallet API', async () => {

@@ -155,6 +155,26 @@ export interface Campaign {
   created_at: string;
 }
 
+/**
+ * Builds a query string, omitting anything undefined so the server applies its
+ * own defaults rather than receiving `limit=undefined`.
+ *
+ * `currencyCode` is spelled `currency_code` on the wire — the casing boundary
+ * between TypeScript and the API contract lives here, not in the pages.
+ */
+function toQueryString(params: Record<string, string | number | undefined>): string {
+  const query = new URLSearchParams();
+
+  for (const [key, value] of Object.entries(params)) {
+    if (value === undefined || value === '') continue;
+    const wireKey = key === 'currencyCode' ? 'currency_code' : key;
+    query.set(wireKey, String(value));
+  }
+
+  const serialised = query.toString();
+  return serialised === '' ? '' : `?${serialised}`;
+}
+
 export const api = {
   signup: (email: string, password: string) =>
     request<AuthResponse>('/api/auth/signup', {
@@ -174,21 +194,28 @@ export const api = {
 
   wallet: () => request<Wallet>('/api/wallet'),
 
-  ledger: (currencyCode?: string) =>
-    request<Paged<LedgerItem>>(
-      `/api/wallet/ledger${currencyCode === undefined ? '' : `?currency_code=${currencyCode}`}`,
-    ),
+  ledger: (params: { currencyCode?: string; limit?: number; offset?: number } = {}) =>
+    request<Paged<LedgerItem>>(`/api/wallet/ledger${toQueryString(params)}`),
 
-  createCheckoutSession: (body: { currency_code: string; plan_id?: number; quantity?: number }) =>
+  /**
+   * `idempotencyKey` must identify the *intent*, not the attempt — the same key
+   * has to be sent on every retry of one purchase, or it protects nothing.
+   */
+  createCheckoutSession: (
+    body: { currency_code: string; plan_id?: number; quantity?: number },
+    idempotencyKey?: string,
+  ) =>
     request<CheckoutSession>('/api/payments/checkout-session', {
       method: 'POST',
       body: JSON.stringify(body),
+      headers: idempotencyKey === undefined ? {} : { 'Idempotency-Key': idempotencyKey },
     }),
 
   paymentStatus: (stripeSessionId: string) =>
     request<PaymentStatus>(`/api/payments/session/${stripeSessionId}`),
 
-  campaigns: () => request<Paged<Campaign>>('/api/campaigns'),
+  campaigns: (params: { limit?: number; offset?: number } = {}) =>
+    request<Paged<Campaign>>(`/api/campaigns${toQueryString(params)}`),
 
   createCampaign: (name: string) =>
     request<Campaign>('/api/campaigns', { method: 'POST', body: JSON.stringify({ name }) }),

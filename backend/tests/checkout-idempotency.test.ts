@@ -12,16 +12,69 @@ import request from 'supertest';
  * jest.mock is scoped per module registry, so the webhook tests in other files
  * continue to use the real client for signature verification.
  */
+/**
+ * The mock models the one piece of Stripe behaviour the resume path depends on:
+ * IDEMPOTENCY KEYS. A repeated `sessions.create` with a key Stripe has already
+ * served returns that same session; one arriving while the first call with the
+ * key is still running is refused with Stripe's idempotency conflict. Without
+ * that, a resumed checkout would silently mint a second session and the tests
+ * below could not tell a correct resume from a double charge.
+ *
+ * `stripeMock.failNext` makes the next call fail, either before Stripe created
+ * anything ('before') or after it did but with the response lost ('after').
+ */
+const stripeMock = {
+  sessionsByKey: new Map<string, { id: string; url: string }>(),
+  inFlight: new Set<string>(),
+  calls: 0,
+  failNext: null as null | 'before' | 'after',
+  reset() {
+    this.sessionsByKey.clear();
+    this.inFlight.clear();
+    this.calls = 0;
+    this.failNext = null;
+  },
+};
+
 jest.mock('../src/lib/stripe', () => ({
   getStripe: () => ({
     checkout: {
       sessions: {
-        create: async () => {
+        create: async (_params: unknown, options?: { idempotencyKey?: string }) => {
+          stripeMock.calls += 1;
+          const key = options?.idempotencyKey;
+
+          const failure = stripeMock.failNext;
+          stripeMock.failNext = null;
+          if (failure === 'before') throw new Error('Stripe unavailable');
+
+          if (key !== undefined) {
+            const cached = stripeMock.sessionsByKey.get(key);
+            if (cached !== undefined) return cached;
+            if (stripeMock.inFlight.has(key)) {
+              throw Object.assign(new Error('Another request with this key is in progress.'), {
+                type: 'StripeIdempotencyError',
+                statusCode: 409,
+              });
+            }
+            stripeMock.inFlight.add(key);
+          }
+
+          // Yield, so concurrent callers genuinely overlap the in-flight window.
+          await new Promise((resolve) => setTimeout(resolve, 20));
+
           const suffix = Math.random().toString(36).slice(2, 12);
-          return {
+          const session = {
             id: `cs_test_${suffix}`,
             url: `https://checkout.stripe.com/c/pay/cs_test_${suffix}`,
           };
+          if (key !== undefined) {
+            stripeMock.sessionsByKey.set(key, session);
+            stripeMock.inFlight.delete(key);
+          }
+
+          if (failure === 'after') throw new Error('Connection reset after Stripe responded');
+          return session;
         },
       },
     },
@@ -49,7 +102,10 @@ describe('checkout-session idempotency', () => {
     app = createApp();
   });
 
-  beforeEach(resetUserData);
+  beforeEach(async () => {
+    stripeMock.reset();
+    await resetUserData();
+  });
   afterAll(closeDatabase);
 
   const buy = (user: TestUser, key?: string, quantity = 100) => {
@@ -151,6 +207,94 @@ describe('checkout-session idempotency', () => {
 
     expect(responses.filter((response) => response.status === 201).length).toBeGreaterThanOrEqual(1);
     await expect(Payment.count({ where: { userId: user.id } })).resolves.toBe(1);
+
+    // Losers resume through Stripe with the payment's own idempotency key, so
+    // however the race falls out there is exactly one payable session.
+    expect(stripeMock.sessionsByKey.size).toBe(1);
+    const created = responses.filter((response) => response.status === 201);
+    for (const response of created) {
+      expect(response.body.stripe_session_id).toBe(created[0]!.body.stripe_session_id);
+    }
+  });
+
+  it('resumes a purchase whose Stripe call failed, instead of wedging the key', async () => {
+    const user = await createUser(app);
+    const key = `resume-${Date.now()}`;
+
+    // Stripe is down for the first attempt: the pending row exists, but has no
+    // session and no checkout URL.
+    stripeMock.failNext = 'before';
+    await buy(user, key).expect(500);
+
+    const stranded = await Payment.findOne({ where: { userId: user.id } });
+    expect(stranded!.checkoutUrl).toBeNull();
+
+    // The retry with the same key used to be refused as "in progress" forever.
+    // It now finishes the original payment.
+    const retry = await buy(user, key).expect(201);
+    expect(retry.body.payment_id).toBe(stranded!.id);
+    expect(retry.headers['idempotent-replayed']).toBe('true');
+
+    const resumed = await Payment.findByPk(stranded!.id);
+    expect(resumed!.stripeSessionId).toBe(retry.body.stripe_session_id);
+    expect(resumed!.checkoutUrl).toBe(retry.body.checkout_url);
+
+    // And from here on it is an ordinary replay, answered without Stripe.
+    const callsBefore = stripeMock.calls;
+    const again = await buy(user, key).expect(201);
+    expect(again.body.checkout_url).toBe(retry.body.checkout_url);
+    expect(stripeMock.calls).toBe(callsBefore);
+
+    await expect(Payment.count({ where: { userId: user.id } })).resolves.toBe(1);
+  });
+
+  it('recovers the SAME session when Stripe created it but the response was lost', async () => {
+    const user = await createUser(app);
+    const key = `lost-${Date.now()}`;
+
+    stripeMock.failNext = 'after';
+    await buy(user, key).expect(500);
+
+    // Stripe did create a session. Resuming must return that one, not open a
+    // second payable session for the same payment.
+    const [created] = [...stripeMock.sessionsByKey.values()];
+    expect(stripeMock.sessionsByKey.size).toBe(1);
+
+    const retry = await buy(user, key).expect(201);
+    expect(retry.body.stripe_session_id).toBe(created!.id);
+    expect(stripeMock.sessionsByKey.size).toBe(1);
+  });
+
+  it('refuses to resume a session-less payment that is no longer pending', async () => {
+    const user = await createUser(app);
+    const key = `settled-${Date.now()}`;
+
+    stripeMock.failNext = 'before';
+    await buy(user, key).expect(500);
+    await Payment.update({ status: 'failed' }, { where: { userId: user.id } });
+
+    const response = await buy(user, key).expect(409);
+    expect(response.body.error.code).toBe('CHECKOUT_NOT_RESUMABLE');
+    expect(stripeMock.calls).toBe(1);
+  });
+
+  it("refuses to resume outside Stripe's idempotency window", async () => {
+    const user = await createUser(app);
+    const key = `stale-${Date.now()}`;
+
+    stripeMock.failNext = 'before';
+    await buy(user, key).expect(500);
+
+    // Past Stripe's 24h key retention a resume could open a second session, so
+    // the caller is told to start over with a new key instead.
+    await Payment.sequelize!.query(
+      'UPDATE payments SET created_at = NOW() - INTERVAL 25 HOUR WHERE user_id = ?',
+      { replacements: [user.id] },
+    );
+
+    const response = await buy(user, key).expect(409);
+    expect(response.body.error.code).toBe('CHECKOUT_NOT_RESUMABLE');
+    expect(stripeMock.calls).toBe(1);
   });
 
   it('rejects an empty Idempotency-Key rather than silently ignoring it', async () => {

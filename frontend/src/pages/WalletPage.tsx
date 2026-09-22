@@ -257,6 +257,11 @@ export function WalletPage() {
       );
       window.location.href = session.checkout_url;
     } catch (caught) {
+      // The server will never resume this key's purchase, so retrying with it
+      // would fail the same way forever. The next submit starts a new intent.
+      if (caught instanceof ApiError && caught.code === 'CHECKOUT_NOT_RESUMABLE') {
+        purchaseIdempotencyKey.current = null;
+      }
       if (caught instanceof ApiError) {
         setBuyError(
           caught.details.length > 0 ? caught.details.map((d) => d.message) : [caught.message],

@@ -6,6 +6,7 @@ import { User } from './user.model';
 import { Wallet } from './wallet.model';
 import { Balance } from './balance.model';
 import { Payment } from './payment.model';
+import { PaymentAttempt } from './paymentAttempt.model';
 import { Campaign } from './campaign.model';
 import { LedgerEntry } from './ledgerEntry.model';
 
@@ -44,6 +45,8 @@ User.hasMany(Payment, { as: 'payments', foreignKey: 'userId' });
 Payment.belongsTo(User, { as: 'user', foreignKey: 'userId' });
 Payment.belongsTo(Currency, { as: 'currency', foreignKey: 'currencyId' });
 Payment.belongsTo(Plan, { as: 'plan', foreignKey: 'planId' });
+Payment.hasMany(PaymentAttempt, { as: 'attempts', foreignKey: 'paymentId' });
+PaymentAttempt.belongsTo(Payment, { as: 'payment', foreignKey: 'paymentId' });
 
 // Campaigns.
 User.hasMany(Campaign, { as: 'campaigns', foreignKey: 'userId' });
@@ -73,10 +76,17 @@ export {
   Wallet,
   Balance,
   Payment,
+  PaymentAttempt,
   Campaign,
   LedgerEntry,
 };
 
-export type { PurchaseKind, PaymentStatus } from './payment.model';
+export type {
+  PurchaseKind,
+  PaymentStatus,
+  PaymentChannel,
+  DirectPaymentOptions,
+} from './payment.model';
+export type { AttemptOutcome, AttemptTrigger } from './paymentAttempt.model';
 export type { CampaignStatus } from './campaign.model';
 export type { LedgerReason } from './ledgerEntry.model';

@@ -4,6 +4,7 @@ import { AuthProvider, useAuth } from './auth/AuthContext';
 import { LoginPage, SignupPage } from './pages/AuthPages';
 import { WalletPage } from './pages/WalletPage';
 import { CampaignsPage } from './pages/CampaignsPage';
+import { RetryLabPage } from './pages/RetryLabPage';
 
 /**
  * Client-side route protection is a UX affordance, not a security control —
@@ -51,6 +52,9 @@ function Header() {
               <NavLink to="/campaigns" className={({ isActive }) => (isActive ? 'is-active' : '')}>
                 Campaigns
               </NavLink>
+              <NavLink to="/retry-lab" className={({ isActive }) => (isActive ? 'is-active' : '')}>
+                Retry lab
+              </NavLink>
             </nav>
 
             <div className="cluster">
@@ -88,6 +92,14 @@ export default function App() {
               element={
                 <RequireAuth>
                   <CampaignsPage />
+                </RequireAuth>
+              }
+            />
+            <Route
+              path="/retry-lab"
+              element={
+                <RequireAuth>
+                  <RetryLabPage />
                 </RequireAuth>
               }
             />

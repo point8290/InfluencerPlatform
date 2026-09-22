@@ -3,7 +3,8 @@ import { requireStripeWebhookSecret } from '../../config/env';
 import { getStripe } from '../../lib/stripe';
 import { BadRequestError } from '../../lib/errors';
 import { isUniqueViolation } from '../../lib/isUniqueViolation';
-import { Balance, LedgerEntry, Payment, Wallet, sequelize } from '../../models';
+import { Payment, sequelize } from '../../models';
+import { applyPurchaseGrant } from '../payments/grant.service';
 
 /**
  * Why every outcome below is a 200.
@@ -189,37 +190,9 @@ export async function grantCreditsForSession(session: Stripe.Checkout.Session): 
         );
       }
 
-      const wallet = await Wallet.findOne({ where: { userId: payment.userId }, transaction });
-      if (wallet === null) {
-        // Signup creates the wallet in the same transaction as the user, so
-        // this is unreachable. Throwing gives a 500 and a redelivery rather
-        // than silently swallowing a broken invariant.
-        throw new Error(`Payment ${payment.id} belongs to user ${payment.userId}, who has no wallet.`);
-      }
-
-      // THE structural guarantee. A concurrent duplicate that gets past the
-      // status check above dies here, on the unique index.
-      await LedgerEntry.create(
-        {
-          walletId: wallet.id,
-          currencyId: payment.currencyId,
-          delta: payment.credits,
-          reason: 'purchase',
-          paymentId: payment.id,
-        },
-        { transaction },
-      );
-
-      // Atomic SQL increment (balance = balance + n), not read-then-write, so
-      // concurrent grants to the same balance cannot lose an update. The spend
-      // path locks this row explicitly instead, because it must READ the value
-      // to check sufficiency — a grant only ever adds.
-      await Balance.increment(
-        { balance: payment.credits },
-        { where: { walletId: wallet.id, currencyId: payment.currencyId }, transaction },
-      );
-
-      await payment.update({ status: 'paid' }, { transaction });
+      // Ledger row (UNIQUE(payment_id) — the exactly-once guarantee), balance
+      // increment and pending -> paid, all inside this transaction.
+      await applyPurchaseGrant(payment, transaction);
 
       return 'granted';
     });

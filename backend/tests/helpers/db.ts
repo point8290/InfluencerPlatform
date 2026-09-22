@@ -10,7 +10,15 @@ import { sequelize } from '../../src/config/database';
  * SequelizeMeta and SequelizeData are excluded too — deleting them would make
  * the tooling believe the schema was never migrated.
  */
-const USER_DATA_TABLES = ['ledger', 'balances', 'payments', 'campaigns', 'wallets', 'users'];
+const USER_DATA_TABLES = [
+  'ledger',
+  'balances',
+  'payment_attempts',
+  'payments',
+  'campaigns',
+  'wallets',
+  'users',
+];
 
 /**
  * Empties user data between tests.

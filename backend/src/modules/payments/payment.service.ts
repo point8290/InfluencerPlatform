@@ -27,7 +27,7 @@ export interface CheckoutSessionResult {
   };
 }
 
-function readIdempotencyKey(raw: unknown): string | null {
+export function readIdempotencyKey(raw: unknown): string | null {
   if (raw === undefined || raw === null) return null;
 
   if (typeof raw !== 'string' || raw.trim() === '') {

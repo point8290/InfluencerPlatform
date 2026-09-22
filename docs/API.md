@@ -380,6 +380,76 @@ The endpoint the post-redirect page polls. **Reads our own `payments` row — it
 
 ---
 
+### Direct payments 🔒
+
+The server-driven flow: **this server** calls the gateway to charge and retries failures itself. See [DESIGN.md → Direct payments](../DESIGN.md#direct-payments--the-server-calls-the-gateway-and-retries). Every endpoint answers `404 NOT_FOUND` when `DIRECT_PAYMENT_GATEWAY=disabled`.
+
+#### `GET /api/direct-payments/config`
+
+The gateway in use, the retry limits and the test instruments the UI may offer.
+
+```json
+{
+  "gateway": "simulated",
+  "default_max_retries": 3,
+  "max_retries_cap": 5,
+  "max_simulated_failures": 10,
+  "base_delay_ms": 250,
+  "max_delay_ms": 4000,
+  "payment_methods": [
+    { "id": "sim_network_timeout", "label": "Network timeout", "description": "…", "uses_failure_count": true }
+  ]
+}
+```
+
+#### `POST /api/direct-payments`
+
+```json
+{ "currency_code": "campaign", "quantity": 100, "payment_method": "sim_processing_error", "max_retries": 3, "simulated_failures": 2 }
+```
+
+`currency_code` plus exactly one of `plan_id` / `quantity`, priced exactly as for Checkout. `payment_method` must be one of the config's ids (`sim_*` for the simulated gateway, Stripe test tokens such as `pm_card_visa` for `stripe`). `max_retries` defaults to `PAYMENT_RETRY_DEFAULT_MAX` and may not exceed `PAYMENT_RETRY_MAX_CAP`; it counts retries, so `3` allows up to 4 gateway calls. `simulated_failures` (default 1) is read only by the simulated gateway.
+
+→ `201` whatever the charge outcome: the payment was created, and its body says how the charge went. A declined card is a payment result, not an HTTP error.
+
+```json
+{
+  "payment_id": 7,
+  "status": "paid",
+  "state": "paid",
+  "credits": 100,
+  "amount_paise": 30000,
+  "currency_code": "campaign",
+  "gateway": "simulated",
+  "payment_method": "sim_processing_error",
+  "max_retries": 3,
+  "simulated_failures": 2,
+  "gateway_charge_count": 1,
+  "attempts": [
+    { "call_number": 1, "attempt_number": 1, "idempotency_key": "direct-7-1f7bcf60-attempt-1", "trigger": "initial", "outcome": "declined", "error_code": "processing_error", "replayed": false, "delay_before_ms": 0, "duration_ms": 26, "…": "…" },
+    { "call_number": 2, "attempt_number": 2, "idempotency_key": "direct-7-1f7bcf60-attempt-2", "trigger": "retry", "outcome": "declined", "…": "…" },
+    { "call_number": 3, "attempt_number": 3, "idempotency_key": "direct-7-1f7bcf60-attempt-3", "trigger": "retry", "outcome": "succeeded", "…": "…" }
+  ]
+}
+```
+
+- `status` is the durable fact (`pending` / `paid` / `failed`). `state` is what it means now: `paid`, `failed`, `requires_customer` (3-D Secure), `processing` (a request is charging it), or `needs_reconciliation` (pending, outcome unknown).
+- One row in `attempts` per gateway **call**. Calls that share `attempt_number` share an idempotency key: re-sends after a transient error. A new `attempt_number` is a new key: a retry after a retryable decline. `replayed: true` means the gateway answered from its idempotency cache, so that call did not charge.
+- `gateway_charge_count` is the simulated gateway's count of real charges (`null` for Stripe). It is never more than 1.
+- `Idempotency-Key` behaves as for Checkout: a repeat returns the payment as it stands (`Idempotent-Replayed: true`) and never charges again. Reusing it with different parameters gives `409 IDEMPOTENCY_KEY_REUSED`.
+
+Errors — `400 VALIDATION_ERROR` (bad `payment_method`, `max_retries` above the cap, and the Checkout validation rules), `400 PLAN_CURRENCY_MISMATCH`, `404 NOT_FOUND`, `409 IDEMPOTENCY_KEY_REUSED`.
+
+#### `GET /api/direct-payments/:id`
+
+The same body, for the authenticated user's own direct payment. Anyone else's is a `404`.
+
+#### `POST /api/direct-payments/:id/reconcile`
+
+Resolves a payment left `pending`. It makes one gateway call, with no automatic retries: it looks the charge up by the gateway's reference when there is one, and otherwise re-sends the last attempt under its **same** key. A charge that already went through is replayed, not repeated. A payment that is already settled is returned unchanged. → `200` with the payment body.
+
+Errors — `404 NOT_FOUND`, `409 PAYMENT_IN_PROGRESS` (another request is calling the gateway for this payment).
+
 ### Stripe webhook
 
 #### `POST /api/webhooks/stripe`
@@ -484,6 +554,7 @@ Errors:
 | `CAMPAIGN_ALREADY_FUNDED` | 409 | Campaign already left `draft` |
 | `IDEMPOTENCY_KEY_REUSED` | 409 | `Idempotency-Key` reused with different purchase parameters |
 | `IDEMPOTENT_REQUEST_IN_PROGRESS` | 409 | A concurrent request with the same key is still creating its session |
+| `PAYMENT_IN_PROGRESS` | 409 | Another request is calling the gateway for this direct payment |
 | `CHECKOUT_NOT_RESUMABLE` | 409 | The key's payment has no session and can no longer safely get one — use a new key |
 | `INSUFFICIENT_CREDITS` | 422 | Well-formed request the current balance cannot satisfy |
 | `INTERNAL_ERROR` | 500 | Unexpected failure; details are logged, not returned |

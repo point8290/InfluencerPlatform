@@ -187,6 +187,31 @@ The application-level `if (status === 'pending')` guard is kept as a **fast-path
 - _Concurrent spends_ → serialized on the single `balances` row lock; the second request reads the already-decremented balance and rejects if now insufficient. `CHECK(balance >= 0)` is the final floor.
 - _Double-fund (same campaign, concurrent)_ → the second request blocks on the campaign row lock. When it acquires the lock its **locking read returns the latest committed row, not its transaction snapshot** — InnoDB's `SELECT … FOR UPDATE` deliberately bypasses REPEATABLE READ's snapshot — so it sees `funded` and the status check rejects it. That is the mechanism that actually fires. `UNIQUE(ledger.campaign_id)` sits beneath it as the backstop: it is what would still make a second funding row impossible if the lock were removed or the status check were wrong. Because both paths return the same `409`, the concurrency tests cannot distinguish them, so the constraint is covered by a separate test that constructs the state the status check cannot see — an existing funding row while the campaign is still `draft`.
 
+### Direct payments — the server calls the gateway, and retries
+
+The Checkout flow above cannot retry a charge: the browser pays Stripe and this server only hears the result. The **direct** flow (`/api/direct-payments`, the *Retry lab* page) exists to show what changes when the server owns the charge call. It sits beside Checkout rather than replacing it, and shares the `payments` table and the grant (`applyPurchaseGrant`) so exactly-once crediting is inherited from `UNIQUE(ledger.payment_id)` rather than rebuilt.
+
+The gateway is an interface (`PaymentGateway`) whose adapters translate every response into one of five outcomes. That translation, not the error message, decides what is safe:
+
+| Outcome | Examples | Engine does | Key |
+| --- | --- | --- | --- |
+| `succeeded` | — | grant | — |
+| `transient` | timeout, connection reset, 429, key in flight | retry while budget remains | **same** — the gateway executes a key at most once, and replays a stored result |
+| `declined`, retryable | `processing_error`, `issuer_not_available` | retry while budget remains | **new** — the last attempt definitely failed |
+| `declined`, final | insufficient funds, stolen card | fail at once | — |
+| `requires_action` | 3-D Secure / OTP | stop; only the customer can finish it | — |
+| `unknown` | Stripe 5xx (Stripe *stores* 5xx under the key, so a same-key re-send cannot help), `processing` | stop; reconcile | — |
+
+- **Out of budget on a transient error is not a failure.** A timed-out call may have charged, so the payment stays `pending` (`state: needs_reconciliation`). Writing it off would be a lie the customer pays for.
+- **Reconciliation** makes one call: look the charge up by the gateway's reference when there is one, otherwise re-send the last attempt under its *same* key. A charge that went through is replayed; one that never executed runs now. Either way, at most one charge per key.
+- **Every call is logged before it is made** (`payment_attempts`, outcome `in_flight`) and updated after, so a crash mid-call leaves a durable trace for reconciliation.
+- **One caller at a time**, via a claim (`payments.processing_started_at`, flipped in a single conditional `UPDATE`) rather than a row lock held across a slow network call.
+- **Retries are bounded twice:** the client chooses `max_retries`, the server caps it (`PAYMENT_RETRY_MAX_CAP`). Backoff is exponential with full jitter (`PAYMENT_RETRY_BASE_DELAY_MS`, `PAYMENT_RETRY_MAX_DELAY_MS`).
+- **Idempotency keys include a random per-payment nonce**, because payment ids repeat when a development database is reset but a gateway remembers keys for a day.
+- **The simulated gateway** (default outside production, refused in production because it grants credits without taking money) models idempotency and counts real charges, so the tests can assert *card charged at most once* under every failure script.
+
+**Not built:** the retry loop runs inside the HTTP request. In production it would run on a job queue — a slow gateway would tie up a worker rather than a request, and a crash would resume from the queue — with a scheduled reconciler instead of a button, and the `requires_action` path would return the `client_secret` to the browser for 3-D Secure.
+
 ---
 
 ## Acceptance criteria → mechanism

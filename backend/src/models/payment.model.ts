@@ -11,9 +11,27 @@ import { sequelize } from '../config/database';
 import type { User } from './user.model';
 import type { Currency } from './currency.model';
 import type { Plan } from './plan.model';
+import type { PaymentAttempt } from './paymentAttempt.model';
 
 export type PurchaseKind = 'plan' | 'quantity';
 export type PaymentStatus = 'pending' | 'paid' | 'expired' | 'failed';
+
+/** What a direct payment asked for; see the payment_attempts migration. */
+export interface DirectPaymentOptions {
+  paymentMethod: string;
+  maxRetries: number;
+  simulatedFailures: number;
+  /**
+   * Random per payment, and part of every gateway idempotency key. Payment ids
+   * repeat when a development database is reset, but a gateway remembers keys
+   * for a day — without this, a reused id could be answered with a different
+   * payment's stored result.
+   */
+  keyNonce: string;
+}
+
+/** Which flow owns the row: hosted Checkout, or a server-driven direct charge. */
+export type PaymentChannel = 'checkout' | 'direct';
 
 /**
  * A credit purchase through Stripe.
@@ -53,6 +71,14 @@ export class Payment extends Model<InferAttributes<Payment>, InferCreationAttrib
   declare checkoutUrl: CreationOptional<string | null>;
   declare amountPaise: number;
   declare credits: number;
+  declare channel: CreationOptional<PaymentChannel>;
+  declare directOptions: CreationOptional<DirectPaymentOptions | null>;
+
+  /**
+   * Direct payments only: set while one request owns the right to call the
+   * gateway for this row. See the payment_attempts migration.
+   */
+  declare processingStartedAt: CreationOptional<Date | null>;
   declare status: CreationOptional<PaymentStatus>;
   declare createdAt: CreationOptional<Date>;
   declare updatedAt: CreationOptional<Date>;
@@ -60,6 +86,7 @@ export class Payment extends Model<InferAttributes<Payment>, InferCreationAttrib
   declare user?: NonAttribute<User>;
   declare currency?: NonAttribute<Currency>;
   declare plan?: NonAttribute<Plan>;
+  declare attempts?: NonAttribute<PaymentAttempt[]>;
 }
 
 Payment.init(
@@ -113,6 +140,19 @@ Payment.init(
       type: DataTypes.ENUM('pending', 'paid', 'expired', 'failed'),
       allowNull: false,
       defaultValue: 'pending',
+    },
+    channel: {
+      type: DataTypes.ENUM('checkout', 'direct'),
+      allowNull: false,
+      defaultValue: 'checkout',
+    },
+    directOptions: {
+      type: DataTypes.JSON,
+      allowNull: true,
+    },
+    processingStartedAt: {
+      type: DataTypes.DATE,
+      allowNull: true,
     },
     createdAt: DataTypes.DATE,
     updatedAt: DataTypes.DATE,

@@ -36,8 +36,71 @@ function intWithDefault(name: string, fallback: number): number {
 
 const databaseName = required('DB_NAME');
 
+export type DirectPaymentGatewayName = 'simulated' | 'stripe' | 'disabled';
+
+/**
+ * Which gateway the server-driven ("direct") payment flow charges through.
+ *
+ * 'simulated' grants REAL credits for FAKE money — it exists to exercise the
+ * retry machinery against failures a real gateway cannot be made to produce on
+ * demand. It is therefore the development default and refused outright in
+ * production, where the flow is off unless a real gateway is named.
+ */
+function directPaymentGateway(nodeEnv: string): DirectPaymentGatewayName {
+  const fallback = nodeEnv === 'production' ? 'disabled' : 'simulated';
+  const value = withDefault('DIRECT_PAYMENT_GATEWAY', fallback);
+
+  if (value !== 'simulated' && value !== 'stripe' && value !== 'disabled') {
+    throw new Error(
+      `DIRECT_PAYMENT_GATEWAY must be "simulated", "stripe" or "disabled", received "${value}".`,
+    );
+  }
+  if (value === 'simulated' && nodeEnv === 'production') {
+    throw new Error(
+      'DIRECT_PAYMENT_GATEWAY=simulated is refused in production: it grants credits without taking money.',
+    );
+  }
+  return value;
+}
+
+function nonNegativeInt(name: string, fallback: number): number {
+  const value = intWithDefault(name, fallback);
+  if (value < 0) {
+    throw new Error(`Environment variable ${name} must be zero or more, received ${value}.`);
+  }
+  return value;
+}
+
+const nodeEnv = withDefault('NODE_ENV', 'development');
+
+/**
+ * Retry policy for server-driven charges.
+ *
+ *   PAYMENT_RETRY_DEFAULT_MAX   retries used when a request does not ask for a
+ *                               number (retries, not calls: 3 means up to 4 calls)
+ *   PAYMENT_RETRY_MAX_CAP       the most a request may ask for — a client must
+ *                               not be able to make the server hammer a gateway
+ *   PAYMENT_RETRY_BASE_DELAY_MS first backoff; doubles on each retry
+ *   PAYMENT_RETRY_MAX_DELAY_MS  ceiling on any single backoff
+ */
+function retryPolicy() {
+  const maxRetriesCap = nonNegativeInt('PAYMENT_RETRY_MAX_CAP', 5);
+  const defaultMaxRetries = nonNegativeInt('PAYMENT_RETRY_DEFAULT_MAX', 3);
+  if (defaultMaxRetries > maxRetriesCap) {
+    throw new Error(
+      `PAYMENT_RETRY_DEFAULT_MAX (${defaultMaxRetries}) cannot exceed PAYMENT_RETRY_MAX_CAP (${maxRetriesCap}).`,
+    );
+  }
+  return {
+    defaultMaxRetries,
+    maxRetriesCap,
+    baseDelayMs: nonNegativeInt('PAYMENT_RETRY_BASE_DELAY_MS', 250),
+    maxDelayMs: nonNegativeInt('PAYMENT_RETRY_MAX_DELAY_MS', 4000),
+  };
+}
+
 export const env = {
-  nodeEnv: withDefault('NODE_ENV', 'development'),
+  nodeEnv,
   port: intWithDefault('PORT', 4000),
   frontendUrl: withDefault('FRONTEND_URL', 'http://localhost:5173'),
 
@@ -56,6 +119,11 @@ export const env = {
   jwt: {
     secret: required('JWT_SECRET'),
     expiresIn: withDefault('JWT_EXPIRES_IN', '7d'),
+  },
+
+  directPayments: {
+    gateway: directPaymentGateway(nodeEnv),
+    retry: retryPolicy(),
   },
 } as const;
 

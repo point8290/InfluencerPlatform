@@ -182,6 +182,12 @@ curl https://api.stripe.com/v1/account -u "$STRIPE_SECRET_KEY:" | head -c 200
 3. Watch the wallet after the redirect: it shows _"waiting for Stripe to confirm"_ and keeps polling.
    **The redirect grants nothing** — the balance only moves when the webhook lands.
 4. **Campaigns** — create one, then fund it. Try funding it twice, and try funding more than you have.
+5. **Retry lab** — the server-driven payment flow, where *this server* calls the gateway and retries.
+   Pick a gateway behaviour (timeout, 429, processing error, "charged but response lost", hard decline,
+   3-D Secure), how many failures to inject and the retry budget, then read the call log. Set the
+   failure count above the retry budget to leave a payment _outcome unknown_ and press **Reconcile**.
+   Runs against a simulated gateway by default (`DIRECT_PAYMENT_GATEWAY`, see `.env.example`); set it to
+   `stripe` to confirm real test-mode PaymentIntents instead.
 
 ### From the terminal
 
@@ -292,7 +298,7 @@ backend/
   src/
     config/                    env validation, Sequelize instance
     models/                    Sequelize models + associations
-    modules/                   auth, currencies, payments, wallet, campaigns, webhooks
+    modules/                   auth, currencies, payments, directPayments, wallet, campaigns, webhooks
     middleware/                requireAuth, error handler
     lib/                       jwt, password, stripe, errors
   tests/

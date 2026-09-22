@@ -14,3 +14,11 @@ process.env.NODE_ENV = 'test';
 
 process.env.STRIPE_SECRET_KEY = 'sk_test_dummy_the_suite_makes_no_stripe_api_calls';
 process.env.STRIPE_WEBHOOK_SECRET = 'whsec_test_fixed_secret_for_deterministic_signature_tests';
+
+// Direct payments run against the scriptable simulated gateway, with backoff
+// shrunk to a millisecond so retry tests exercise the schedule without waiting.
+process.env.DIRECT_PAYMENT_GATEWAY = 'simulated';
+process.env.PAYMENT_RETRY_DEFAULT_MAX = '3';
+process.env.PAYMENT_RETRY_MAX_CAP = '5';
+process.env.PAYMENT_RETRY_BASE_DELAY_MS = '1';
+process.env.PAYMENT_RETRY_MAX_DELAY_MS = '2';

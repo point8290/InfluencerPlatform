@@ -573,6 +573,24 @@ input::placeholder {
   border: 1px solid var(--border);
 }
 
+/* Outcome chips (retry lab). */
+.chip--positive {
+  background: var(--positive-soft);
+  color: var(--positive);
+}
+.chip--negative {
+  background: var(--negative-soft);
+  color: var(--negative);
+}
+.chip--warning {
+  background: var(--warning-soft);
+  color: var(--warning);
+}
+.chip--info {
+  background: var(--info-soft);
+  color: var(--info);
+}
+
 /* ── Tables ─────────────────────────────────────────────────────────────── */
 
 .table-wrap {

@@ -6,6 +6,7 @@ import { stripeWebhookRouter } from './modules/webhooks/webhook.routes';
 import { authRouter } from './modules/auth/auth.routes';
 import { currencyRouter } from './modules/currencies/currency.routes';
 import { paymentRouter } from './modules/payments/payment.routes';
+import { directPaymentRouter } from './modules/directPayments/directPayment.routes';
 import { walletRouter } from './modules/wallet/wallet.routes';
 import { campaignRouter } from './modules/campaigns/campaign.routes';
 
@@ -47,6 +48,7 @@ export function createApp(): express.Express {
   app.use('/api/auth', authRouter);
   app.use('/api/currencies', currencyRouter);
   app.use('/api/payments', paymentRouter);
+  app.use('/api/direct-payments', directPaymentRouter);
   app.use('/api/wallet', walletRouter);
   app.use('/api/campaigns', campaignRouter);
 

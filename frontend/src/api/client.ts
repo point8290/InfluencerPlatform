@@ -155,6 +155,55 @@ export interface Campaign {
   created_at: string;
 }
 
+export interface DirectPaymentMethod {
+  id: string;
+  label: string;
+  description: string;
+  uses_failure_count: boolean;
+}
+
+export interface DirectPaymentConfig {
+  gateway: 'simulated' | 'stripe';
+  default_max_retries: number;
+  max_retries_cap: number;
+  max_simulated_failures: number;
+  base_delay_ms: number;
+  max_delay_ms: number;
+  payment_methods: DirectPaymentMethod[];
+}
+
+export interface DirectPaymentAttempt {
+  call_number: number;
+  attempt_number: number;
+  idempotency_key: string;
+  trigger: 'initial' | 'retry' | 'reconcile';
+  outcome: 'in_flight' | 'succeeded' | 'requires_action' | 'declined' | 'transient_error' | 'unknown';
+  error_code: string | null;
+  error_message: string | null;
+  gateway_reference: string | null;
+  replayed: boolean;
+  delay_before_ms: number;
+  duration_ms: number | null;
+  created_at: string;
+}
+
+export interface DirectPayment {
+  payment_id: number;
+  status: 'pending' | 'paid' | 'failed' | 'expired';
+  state: 'paid' | 'failed' | 'requires_customer' | 'processing' | 'needs_reconciliation';
+  credits: number;
+  amount_paise: number;
+  currency_code: string;
+  gateway: 'simulated' | 'stripe' | null;
+  payment_method: string | null;
+  max_retries: number | null;
+  simulated_failures: number | null;
+  /** Simulated gateway only: how many times money was actually taken. */
+  gateway_charge_count: number | null;
+  attempts: DirectPaymentAttempt[];
+  created_at: string;
+}
+
 /**
  * Builds a query string, omitting anything undefined so the server applies its
  * own defaults rather than receiving `limit=undefined`.
@@ -213,6 +262,29 @@ export const api = {
 
   paymentStatus: (stripeSessionId: string) =>
     request<PaymentStatus>(`/api/payments/session/${stripeSessionId}`),
+
+  directPaymentConfig: () => request<DirectPaymentConfig>('/api/direct-payments/config'),
+
+  createDirectPayment: (
+    body: {
+      currency_code: string;
+      quantity: number;
+      payment_method: string;
+      max_retries: number;
+      simulated_failures?: number;
+    },
+    idempotencyKey: string,
+  ) =>
+    request<DirectPayment>('/api/direct-payments', {
+      method: 'POST',
+      body: JSON.stringify(body),
+      headers: { 'Idempotency-Key': idempotencyKey },
+    }),
+
+  directPayment: (id: number) => request<DirectPayment>(`/api/direct-payments/${id}`),
+
+  reconcileDirectPayment: (id: number) =>
+    request<DirectPayment>(`/api/direct-payments/${id}/reconcile`, { method: 'POST' }),
 
   campaigns: (params: { limit?: number; offset?: number } = {}) =>
     request<Paged<Campaign>>(`/api/campaigns${toQueryString(params)}`),

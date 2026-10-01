@@ -84,7 +84,7 @@ token and is never read from the request.
 | Least privilege | Separate access roles and functional roles; `MANAGED ACCESS` schemas; the loader can only write RAW; readers never touch RAW. | `01_rbac.sql` |
 | Separation of duties | `ANALYTICS_GOVERNOR` owns the policies but holds no data entitlements. | `01_rbac.sql` |
 | Retention | Daily task purges `API_ACCESS_LOG` rows older than 400 days. Kafka topics keep 30 days (DLQ: 90). | `04_governance.sql`, `docker/kafka/create-topics.sh` |
-| Right to erasure | `CALL GOVERNANCE.ERASE_USER_PII(<user_id>)` redacts the email in RAW and keeps financial facts. Time Travel keeps the old rows for 30 more days. | `04_governance.sql` |
+| Right to erasure | `CALL GOVERNANCE.ERASE_USER_PII(<user_id>)` redacts the email in RAW and keeps financial facts. Time Travel keeps the old rows for 1 more day (the retention set in `00_bootstrap.sql`), then Snowflake Fail-safe for 7. | `04_governance.sql` |
 | Audit | Every API request (allowed, denied or error) goes to `GOVERNANCE.API_ACCESS_LOG`. Its `request_id` is also the Snowflake `QUERY_TAG`, so it joins to `QUERY_HISTORY`. Direct SQL access is in `V_WAREHOUSE_ACCESS_HISTORY`. | `audit.py`, `02_raw.sql` |
 | Cost | Resource monitor (suspends at 100% of quota), auto-suspend at 60 s, 120 s statement timeout on `ANALYTICS_WH`. | `00_bootstrap.sql` |
 
@@ -124,6 +124,10 @@ ALTER USER ANALYTICS_API_SVC    SET RSA_PUBLIC_KEY = 'MIIBIjANBg...';
 ```
 
 Every script is idempotent, so running it again converges instead of failing.
+
+> **Edition.** `00`–`03` run on any edition. `04_governance.sql` uses tags, masking policies
+> and row access policies, which need **Enterprise** edition or higher; on Standard it fails
+> with "Unsupported feature". Snowflake trials let you pick the edition at signup.
 
 ### 2. Run the stack
 

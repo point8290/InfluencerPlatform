@@ -25,7 +25,6 @@ CREATE TABLE IF NOT EXISTS RAW.PLATFORM_EVENTS (
   CONSTRAINT pk_platform_events PRIMARY KEY (event_id)  -- informational; MERGE enforces it
 )
 CLUSTER BY (TO_DATE(occurred_at), event_type)
-DATA_RETENTION_TIME_IN_DAYS = 30
 CHANGE_TRACKING = TRUE
 COMMENT = 'Domain events from the backend transactional outbox. Contains PII (payload:email).';
 
@@ -44,7 +43,6 @@ CREATE TABLE IF NOT EXISTS GOVERNANCE.API_ACCESS_LOG (
   ingested_at      TIMESTAMP_TZ  NOT NULL DEFAULT CURRENT_TIMESTAMP(),
   CONSTRAINT pk_api_access_log PRIMARY KEY (request_id)
 )
-DATA_RETENTION_TIME_IN_DAYS = 30
 COMMENT = 'Every analytics API request, allowed or denied. Loaded from the audit Kafka topic.';
 
 USE ROLE SECURITYADMIN;

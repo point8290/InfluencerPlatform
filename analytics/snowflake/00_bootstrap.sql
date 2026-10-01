@@ -25,8 +25,12 @@ CREATE WAREHOUSE IF NOT EXISTS ANALYTICS_WH
   STATEMENT_TIMEOUT_IN_SECONDS = 120
   COMMENT = 'Dashboard and analytics API reads.';
 
+-- Time Travel is left at 1 day, the most Standard edition allows, so these
+-- scripts run on any edition. On Enterprise you may raise it (up to 90), e.g.
+--   ALTER DATABASE INFLUENCER_ANALYTICS SET DATA_RETENTION_TIME_IN_DAYS = 30;
+-- Longer retention also lengthens how long erased PII survives in Time Travel.
 CREATE DATABASE IF NOT EXISTS INFLUENCER_ANALYTICS
-  DATA_RETENTION_TIME_IN_DAYS = 7
+  DATA_RETENTION_TIME_IN_DAYS = 1
   COMMENT = 'Influencer platform analytics. Source of record: backend MySQL ledger via Kafka.';
 
 -- MANAGED ACCESS: only the schema owner (and MANAGE GRANTS holders) can grant

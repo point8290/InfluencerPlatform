@@ -135,8 +135,9 @@ ALTER TASK PURGE_API_ACCESS_LOG RESUME;
 -- ── Right to erasure ────────────────────────────────────────────────────────
 -- Redacts one user's email everywhere it appears in RAW. Financial facts are
 -- kept (they are keyed by user_id, not identity) so totals do not change.
--- Time Travel still holds the pre-erasure rows for RAW's retention period
--- (30 days) — state that in any erasure SLA.
+-- Time Travel still holds the pre-erasure rows for the database's retention
+-- period (1 day as shipped), then Fail-safe for 7 more — state both in any
+-- erasure SLA.
 CREATE OR REPLACE PROCEDURE ERASE_USER_PII(TARGET_USER_ID NUMBER)
   RETURNS VARCHAR
   LANGUAGE SQL

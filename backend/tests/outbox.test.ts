@@ -159,6 +159,27 @@ describe('transactional outbox', () => {
       await expect(relayBatch(publisher, 2)).resolves.toBe(1);
     });
 
+    it('lets a second relay take other rows instead of blocking on the first (SKIP LOCKED)', async () => {
+      await createUser(app);
+      await createUser(app);
+
+      // Relay A locks the first row and is held mid-publish.
+      let release!: () => void;
+      const held = new Promise<void>((resolve) => (release = resolve));
+      const slow: EventPublisher = { publish: () => held };
+      const relayA = relayBatch(slow, 1);
+      await new Promise((resolve) => setTimeout(resolve, 200));
+
+      // Relay B must not wait for A's lock, and must not take A's row.
+      const fast = new RecordingPublisher();
+      await expect(relayBatch(fast, 10)).resolves.toBe(1);
+      expect(fast.sent.map((m) => m.envelope.payload.user_id)).toEqual([2]);
+
+      release();
+      await expect(relayA).resolves.toBe(1);
+      await expect(OutboxEvent.count({ where: { publishedAt: null } })).resolves.toBe(0);
+    });
+
     it('leaves events unpublished and records the error when the broker fails', async () => {
       await createUser(app);
       const publisher = new RecordingPublisher();

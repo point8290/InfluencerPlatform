@@ -1,4 +1,4 @@
-import { Kafka, logLevel, type Producer } from 'kafkajs';
+import { Kafka, Partitioners, logLevel, type Producer } from 'kafkajs';
 import { env } from '../config/env';
 import type { EventPublisher, OutboundMessage } from './relay';
 
@@ -19,7 +19,12 @@ export class KafkaPublisher implements EventPublisher {
       brokers: env.kafka.brokers,
       logLevel: logLevel.WARN,
     });
-    this.producer = kafka.producer({ idempotent: true, maxInFlightRequests: 1 });
+    this.producer = kafka.producer({
+      idempotent: true,
+      maxInFlightRequests: 1,
+      // Explicit, which also silences kafkajs's v2 partitioner-change warning.
+      createPartitioner: Partitioners.DefaultPartitioner,
+    });
   }
 
   async connect(): Promise<void> {

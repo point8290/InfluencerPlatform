@@ -1,4 +1,4 @@
-import { Op } from 'sequelize';
+import { QueryTypes } from 'sequelize';
 import { OutboxEvent, sequelize } from '../models';
 import { SCHEMA_VERSION } from './events';
 
@@ -73,18 +73,19 @@ export async function relayBatch(publisher: EventPublisher, batchSize: number): 
   let publishError: unknown = null;
 
   const published = await sequelize.transaction(async (transaction) => {
-    const rows = await OutboxEvent.findAll({
-      where: { publishedAt: { [Op.is]: null } },
-      order: [['id', 'ASC']],
-      limit: batchSize,
-      transaction,
-      lock: transaction.LOCK.UPDATE,
-      skipLocked: true,
-    });
+    // Raw SQL because Sequelize's `skipLocked` option is silently ignored by
+    // its MySQL dialect: the generated query would be a plain FOR UPDATE, and a
+    // second relay would block behind the first instead of taking other rows.
+    const locked = await sequelize.query<{ id: number }>(
+      'SELECT id FROM outbox_events WHERE published_at IS NULL ' +
+        'ORDER BY id ASC LIMIT :limit FOR UPDATE SKIP LOCKED',
+      { replacements: { limit: batchSize }, type: QueryTypes.SELECT, transaction },
+    );
 
-    if (rows.length === 0) return 0;
+    if (locked.length === 0) return 0;
 
-    const ids = rows.map((row) => row.id);
+    const ids = locked.map((row) => row.id);
+    const rows = await OutboxEvent.findAll({ where: { id: ids }, order: [['id', 'ASC']], transaction });
 
     try {
       await publisher.publish(

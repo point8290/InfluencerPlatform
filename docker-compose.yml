@@ -6,7 +6,12 @@ name: credits-wallet
 #                             host with `npm run dev` — the faster inner loop,
 #                             since tsx watch and Vite HMR avoid the bind mount.
 #
-#   docker compose up         Everything. No host dependency beyond Docker.
+#   docker compose up         Everything except analytics. No host dependency
+#                             beyond Docker; the backend migrates and seeds itself.
+#
+#   docker compose --profile analytics up
+#                             Also the Python analytics stack (needs Snowflake;
+#                             see analytics/README.md).
 #
 # Credentials below are local development values with defaults, so a fresh
 # clone works with no .env at the repository root. Real Stripe keys are read
@@ -79,7 +84,10 @@ services:
       # Anonymous volume: keeps the container's node_modules from being hidden
       # by the host directory mounted over /app.
       - /app/node_modules
-    command: npm run dev
+    # Migrations and seeders are tracked (SequelizeMeta / SequelizeData), so
+    # re-running both on every start is a no-op after the first — and a fresh
+    # clone works with a single `docker compose up`.
+    command: sh -c "npm run migrate && npm run seed && npm run dev"
 
   frontend:
     build:
@@ -174,6 +182,10 @@ services:
         condition: service_healthy
       kafka-init:
         condition: service_completed_successfully
+      # The backend container runs the migrations. Until outbox_events exists
+      # the relay's polls fail and back off, so start order is not critical.
+      backend:
+        condition: service_started
     environment:
       NODE_ENV: development
       DB_HOST: mysql

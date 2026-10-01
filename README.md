@@ -22,6 +22,46 @@ documented in [analytics/README.md](analytics/README.md).
 
 ---
 
+## Quick start with Docker
+
+Everything runs in containers; you need only Docker Desktop (or Docker Engine + Compose v2).
+
+```bash
+git clone <this repo> && cd InfluencerPlatform
+git checkout ccr-dced27e6-ndm01x
+docker compose up -d --build
+```
+
+| Service | URL | Notes |
+| --- | --- | --- |
+| Frontend | http://localhost:5173 | sign up, buy credits, create and fund campaigns |
+| Backend API | http://localhost:4000/health | migrates and seeds itself on start |
+| MySQL | `127.0.0.1:3307` | root / `devroot` |
+| Kafka | `localhost:9094` | topics created by `kafka-init` |
+| Redis | `127.0.0.1:6379` | |
+| Outbox relay | — | `docker compose logs -f outbox-relay` shows `published N event(s)` |
+
+Watch events arrive in Kafka as you use the app:
+
+```bash
+docker compose exec kafka /opt/kafka/bin/kafka-console-consumer.sh \
+  --bootstrap-server localhost:9092 --topic platform.campaigns.v1 --from-beginning
+```
+
+The analytics API and dashboard need a Snowflake account. Once `analytics/.env` and the key pair
+are in place ([analytics/README.md](analytics/README.md#setup)):
+
+```bash
+docker compose --profile analytics up -d --build   # dashboard on http://localhost:8501
+```
+
+Buying credits also needs Stripe test keys; see [section 6](#6-stripe-webhooks). Stop everything
+with `docker compose down`, or `docker compose down -v` to also delete the data.
+
+The numbered sections below are the host-based (non-Docker) setup.
+
+---
+
 ## 1. Prerequisites
 
 - **Node.js 20+** (developed on 22)
@@ -76,7 +116,7 @@ node -e "console.log(require('crypto').randomBytes(48).toString('hex'))"
 ## 4. Create the schema and seed configuration
 
 ```bash
-npm run migrate     # 9 tables, in foreign-key order
+npm run migrate     # 10 tables, in foreign-key order
 npm run seed        # 3 modules, 3 currencies, 6 plans
 ```
 

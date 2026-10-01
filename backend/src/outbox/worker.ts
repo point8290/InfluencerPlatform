@@ -11,6 +11,8 @@ import { runRelayLoop } from './relay';
  * grows the outbox until the relay catches up.
  */
 async function main(): Promise<void> {
+  // The relay polls every second; per-query SQL logging would drown its output.
+  (sequelize as unknown as { options: { logging: unknown } }).options.logging = false;
   await sequelize.authenticate();
 
   const publisher = new KafkaPublisher();

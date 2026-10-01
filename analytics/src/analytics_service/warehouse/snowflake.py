@@ -67,6 +67,8 @@ def connect(settings: Settings, *, user: str, role: str, warehouse: str) -> Any:
         database=settings.snowflake_database,
         application="influencer-analytics",
         client_session_keep_alive=True,
+        # Fail in seconds, not minutes, on a wrong account or blocked network.
+        login_timeout=30,
         session_parameters={"TIMEZONE": "UTC", "STATEMENT_TIMEOUT_IN_SECONDS": 60},
         **_auth_kwargs(settings),
     )

@@ -129,7 +129,17 @@ Every script is idempotent, so running it again converges instead of failing.
 > and row access policies, which need **Enterprise** edition or higher; on Standard it fails
 > with "Unsupported feature". Snowflake trials let you pick the edition at signup.
 
-### 2. Run the stack
+### 2. Check the connection
+
+```bash
+docker compose --profile analytics build analytics-api
+docker compose --profile analytics run --rm analytics-api analytics-check
+```
+
+It logs in as both service users, the way the services will, and prints `[ok]` or `[FAIL]`
+with the likely cause for each step. When all 7 pass, start the stack.
+
+### 3. Run the stack
 
 ```bash
 cp analytics/.env.example analytics/.env      # set SNOWFLAKE_ACCOUNT and JWT_SECRET

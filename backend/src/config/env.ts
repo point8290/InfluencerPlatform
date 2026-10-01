@@ -57,6 +57,23 @@ export const env = {
     secret: required('JWT_SECRET'),
     expiresIn: withDefault('JWT_EXPIRES_IN', '7d'),
   },
+
+  // Only the outbox relay talks to Kafka. The API process writes events to the
+  // outbox table and never opens a broker connection, so none of this is
+  // required for the API to boot.
+  kafka: {
+    brokers: withDefault('KAFKA_BROKERS', 'localhost:9094')
+      .split(',')
+      .map((broker) => broker.trim())
+      .filter((broker) => broker !== ''),
+    clientId: withDefault('KAFKA_CLIENT_ID', 'credits-wallet-outbox-relay'),
+    topicPrefix: withDefault('KAFKA_TOPIC_PREFIX', 'platform'),
+  },
+
+  outbox: {
+    pollIntervalMs: intWithDefault('OUTBOX_POLL_INTERVAL_MS', 1000),
+    batchSize: intWithDefault('OUTBOX_BATCH_SIZE', 100),
+  },
 } as const;
 
 export const isProduction = env.nodeEnv === 'production';

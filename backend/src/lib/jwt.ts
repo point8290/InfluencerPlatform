@@ -1,5 +1,6 @@
 import jwt from 'jsonwebtoken';
 import { env } from '../config/env';
+import type { UserRole } from '../models/user.model';
 import { UnauthenticatedError } from './errors';
 
 /**
@@ -13,8 +14,18 @@ import { UnauthenticatedError } from './errors';
  */
 const ALGORITHM = 'HS256' as const;
 
-export function signAccessToken(userId: number): string {
-  return jwt.sign({}, env.jwt.secret, {
+/**
+ * `role` is carried as a claim for the analytics service's RBAC, which verifies
+ * the same token with the same secret. This API itself never reads it: every
+ * handler here is scoped to the caller's own rows, whatever their role.
+ *
+ * A role change takes effect at the user's next login. Tokens already issued
+ * keep their old claim until they expire (JWT_EXPIRES_IN) — the usual
+ * trade-off of a stateless token, and the reason elevation should be paired
+ * with a short expiry in production.
+ */
+export function signAccessToken(userId: number, role: UserRole = 'member'): string {
+  return jwt.sign({ role }, env.jwt.secret, {
     subject: String(userId),
     expiresIn: env.jwt.expiresIn as jwt.SignOptions['expiresIn'],
     algorithm: ALGORITHM,

@@ -2,7 +2,7 @@
   "name": "credits-wallet-backend",
   "version": "1.0.0",
   "private": true,
-  "description": "Multi-currency credits wallet and campaign funding — backend",
+  "description": "Multi-currency credits wallet and campaign funding \u2014 backend",
   "main": "dist/server.js",
   "scripts": {
     "dev": "tsx watch src/server.ts",
@@ -18,7 +18,10 @@
     "demo:checkout": "tsx scripts/create-checkout.ts",
     "test": "cross-env NODE_ENV=test jest",
     "test:watch": "cross-env NODE_ENV=test jest --watch",
-    "demo:concurrent-fund": "tsx scripts/demo-concurrent-funding.ts"
+    "demo:concurrent-fund": "tsx scripts/demo-concurrent-funding.ts",
+    "outbox:relay": "tsx src/outbox/worker.ts",
+    "outbox:relay:prod": "node dist/outbox/worker.js",
+    "user:set-role": "tsx scripts/set-user-role.ts"
   },
   "engines": {
     "node": ">=20"
@@ -29,6 +32,7 @@
     "dotenv": "^17.4.2",
     "express": "^4.22.2",
     "jsonwebtoken": "^9.0.3",
+    "kafkajs": "^2.2.4",
     "mysql2": "^3.23.2",
     "sequelize": "^6.37.8",
     "stripe": "^22.4.0"

@@ -8,6 +8,7 @@ import { Balance } from './balance.model';
 import { Payment } from './payment.model';
 import { Campaign } from './campaign.model';
 import { LedgerEntry } from './ledgerEntry.model';
+import { OutboxEvent } from './outboxEvent.model';
 
 /**
  * Associations live here rather than inside each model file, so that no model
@@ -75,8 +76,10 @@ export {
   Payment,
   Campaign,
   LedgerEntry,
+  OutboxEvent,
 };
 
 export type { PurchaseKind, PaymentStatus } from './payment.model';
+export { USER_ROLES, type UserRole } from './user.model';
 export type { CampaignStatus } from './campaign.model';
 export type { LedgerReason } from './ledgerEntry.model';

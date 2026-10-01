@@ -100,5 +100,160 @@ services:
     # a container is unreachable from the host.
     command: npm run dev -- --host 0.0.0.0
 
+  # ── Event backbone & cache ────────────────────────────────────────────────
+  # The API never talks to Kafka. It writes domain events to the outbox table
+  # in the same transaction as the ledger; outbox-relay publishes them.
+
+  kafka:
+    image: apache/kafka:3.8.0
+    container_name: credits-wallet-kafka
+    restart: unless-stopped
+    environment:
+      # Single-node KRaft (no ZooKeeper). Development only: replication 1.
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      # INTERNAL for containers (kafka:9092), EXTERNAL for the host (localhost:9094).
+      KAFKA_LISTENERS: INTERNAL://:9092,CONTROLLER://:9093,EXTERNAL://:9094
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:9092,EXTERNAL://localhost:9094
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      # Topics are created explicitly by kafka-init with the intended settings;
+      # a typo in a producer must not silently create a new topic.
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+    ports:
+      - "127.0.0.1:9094:9094"
+    volumes:
+      - kafka_data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 >/dev/null 2>&1"]
+      interval: 5s
+      timeout: 10s
+      retries: 20
+      start_period: 20s
+
+  kafka-init:
+    image: apache/kafka:3.8.0
+    container_name: credits-wallet-kafka-init
+    depends_on:
+      kafka:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "/init/create-topics.sh"]
+    environment:
+      KAFKA_BOOTSTRAP: kafka:9092
+      KAFKA_TOPIC_PREFIX: platform
+    volumes:
+      - ./docker/kafka/create-topics.sh:/init/create-topics.sh:ro
+    restart: "no"
+
+  redis:
+    image: redis:7-alpine
+    container_name: credits-wallet-redis
+    restart: unless-stopped
+    # Cache only: no persistence, bounded memory, evict least-recently-used.
+    command: ["redis-server", "--save", "", "--appendonly", "no", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru"]
+    ports:
+      - "127.0.0.1:6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  outbox-relay:
+    build:
+      context: ./backend
+    container_name: credits-wallet-outbox-relay
+    restart: unless-stopped
+    depends_on:
+      mysql:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+    environment:
+      NODE_ENV: development
+      DB_HOST: mysql
+      DB_PORT: 3306
+      DB_NAME: credits_wallet
+      DB_USER: root
+      DB_PASSWORD: ${DB_PASSWORD:-devroot}
+      JWT_SECRET: ${JWT_SECRET:-docker-development-secret-not-for-production}
+      KAFKA_BROKERS: kafka:9092
+      KAFKA_TOPIC_PREFIX: platform
+    volumes:
+      - ./backend:/app
+      - /app/node_modules
+    command: npm run outbox:relay
+
+  # ── Analytics (Python) ────────────────────────────────────────────────────
+  # Behind a profile because Snowflake is a hosted service with no local
+  # stand-in: `docker compose --profile analytics up` once analytics/.env
+  # holds real Snowflake credentials (see analytics/README.md).
+
+  analytics-consumer:
+    profiles: ["analytics"]
+    build:
+      context: ./analytics
+    container_name: credits-wallet-analytics-consumer
+    restart: unless-stopped
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    env_file: ./analytics/.env
+    environment:
+      KAFKA_BROKERS: kafka:9092
+      REDIS_URL: redis://redis:6379/0
+      SNOWFLAKE_PRIVATE_KEY_PATH: /run/secrets/snowflake_rsa_key.p8
+    volumes:
+      - ./analytics/secrets:/run/secrets:ro
+    command: analytics-consumer
+
+  analytics-api:
+    profiles: ["analytics"]
+    build:
+      context: ./analytics
+    container_name: credits-wallet-analytics-api
+    restart: unless-stopped
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    env_file: ./analytics/.env
+    environment:
+      KAFKA_BROKERS: kafka:9092
+      REDIS_URL: redis://redis:6379/0
+      SNOWFLAKE_PRIVATE_KEY_PATH: /run/secrets/snowflake_rsa_key.p8
+      JWT_SECRET: ${JWT_SECRET:-docker-development-secret-not-for-production}
+    volumes:
+      - ./analytics/secrets:/run/secrets:ro
+    ports:
+      - "8000:8000"
+    command: analytics-api
+
+  analytics-dashboard:
+    profiles: ["analytics"]
+    build:
+      context: ./analytics
+    container_name: credits-wallet-analytics-dashboard
+    restart: unless-stopped
+    depends_on:
+      - analytics-api
+    environment:
+      # Resolved by the dashboard SERVER (Streamlit runs Python server-side),
+      # so these are compose service names, not localhost.
+      BACKEND_URL: http://backend:4000
+      ANALYTICS_API_URL: http://analytics-api:8000
+    ports:
+      - "8501:8501"
+    command: ["streamlit", "run", "dashboard/app.py", "--server.address=0.0.0.0", "--server.port=8501", "--server.headless=true"]
+
 volumes:
   mysql_data:
+  kafka_data:

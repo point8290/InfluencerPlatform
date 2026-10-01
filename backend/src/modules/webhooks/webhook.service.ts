@@ -3,7 +3,8 @@ import { requireStripeWebhookSecret } from '../../config/env';
 import { getStripe } from '../../lib/stripe';
 import { BadRequestError } from '../../lib/errors';
 import { isUniqueViolation } from '../../lib/isUniqueViolation';
-import { Balance, LedgerEntry, Payment, Wallet, sequelize } from '../../models';
+import { Balance, Currency, LedgerEntry, Module, Payment, Wallet, sequelize } from '../../models';
+import { recordEvent } from '../../outbox/recordEvent';
 
 /**
  * Why every outcome below is a 200.
@@ -220,6 +221,24 @@ export async function grantCreditsForSession(session: Stripe.Checkout.Session): 
       );
 
       await payment.update({ status: 'paid' }, { transaction });
+
+      // Same transaction as the ledger row: the event exists if and only if
+      // the grant committed. A rolled-back duplicate leaves no event behind.
+      const currency = await Currency.findByPk(payment.currencyId, {
+        include: [{ model: Module, as: 'module' }],
+        transaction,
+      });
+      await recordEvent(transaction, 'credits.purchased', {
+        payment_id: payment.id,
+        user_id: payment.userId,
+        wallet_id: wallet.id,
+        currency_code: currency?.code ?? 'unknown',
+        module_code: currency?.module?.code ?? 'unknown',
+        purchase_kind: payment.purchaseKind,
+        plan_id: payment.planId ?? null,
+        credits: payment.credits,
+        amount_paise: payment.amountPaise,
+      });
 
       return 'granted';
     });

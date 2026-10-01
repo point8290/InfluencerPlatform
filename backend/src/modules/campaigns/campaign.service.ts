@@ -16,6 +16,7 @@ import {
   type ErrorDetail,
 } from '../../lib/errors';
 import { isUniqueViolation } from '../../lib/isUniqueViolation';
+import { recordEvent } from '../../outbox/recordEvent';
 import type { Pagination } from '../wallet/wallet.service';
 
 /**
@@ -86,7 +87,19 @@ export async function createCampaign(userId: number, body: unknown): Promise<Cam
     );
   }
 
-  const campaign = await Campaign.create({ userId, moduleId: module.id, name, status: 'draft' });
+  // A transaction only so the campaign and its event commit together.
+  const campaign = await sequelize.transaction(async (transaction) => {
+    const created = await Campaign.create(
+      { userId, moduleId: module.id, name, status: 'draft' },
+      { transaction },
+    );
+    await recordEvent(transaction, 'campaign.created', {
+      campaign_id: created.id,
+      user_id: userId,
+      module_code: module.code,
+    });
+    return created;
+  });
 
   const created = await Campaign.findByPk(campaign.id, { include: VIEW_INCLUDES });
   return toView(created!);
@@ -206,7 +219,10 @@ export async function fundCampaign(
     throw new NotFoundError('No such campaign.');
   }
 
-  const currency = await Currency.findOne({ where: { moduleId: campaign.moduleId } });
+  const currency = await Currency.findOne({
+    where: { moduleId: campaign.moduleId },
+    include: [{ model: Module, as: 'module' }],
+  });
   if (currency === null) {
     // UNIQUE(currencies.module_id) guarantees at most one; seeding guarantees
     // at least one. Reaching here means configuration is broken.
@@ -291,6 +307,16 @@ export async function fundCampaign(
       await balance.update({ balance: balance.balance - credits }, { transaction });
 
       await lockedCampaign.update({ status: 'funded' }, { transaction });
+
+      await recordEvent(transaction, 'campaign.funded', {
+        campaign_id: lockedCampaign.id,
+        user_id: userId,
+        wallet_id: wallet.id,
+        currency_code: currency.code,
+        module_code: currency.module?.code ?? CAMPAIGN_MODULE_CODE,
+        credits,
+        balance_after: balance.balance,
+      });
     });
   } catch (error) {
     // A concurrent request won the race and funded first. The whole

@@ -211,6 +211,28 @@ The application-level `if (status === 'pending')` guard is kept as a **fast-path
 
 ---
 
+## Analytics & event pipeline
+
+Analytics are a separate service, connected to this backend by **events only**. The backend has
+no import of, and no network call to, Kafka, Redis or Snowflake on any request path.
+
+- **Transactional outbox, not publish-after-commit.** `recordEvent(transaction, …)` appends to
+  `outbox_events` inside the same transaction as the ledger insert. A publish after commit can be
+  lost to a crash. A publish before commit can describe a rollback. Either way the warehouse
+  would quietly disagree with the ledger. `recordEvent` takes a transaction as a required
+  argument, so an event can't be recorded outside one.
+- **The ledger's existing exactly-once guarantees carry over.** A duplicate webhook that dies on
+  `uq_ledger_payment_id` rolls back its event too, so `credits.purchased` is emitted once per
+  payment. A funding rejected for insufficient credits emits nothing. `tests/outbox.test.ts`
+  proves both.
+- **The relay delivers at-least-once.** Rows are marked published only after the broker
+  acknowledges them, and the consumer dedupes on `event_id`.
+- **Roles.** `users.role` (`member` / `analyst` / `finance` / `admin`) is carried in the JWT for
+  the analytics service's RBAC. This API ignores it: every endpoint here stays scoped to the
+  caller's own rows whatever their role.
+
+Full design: [analytics/README.md](analytics/README.md).
+
 ## Honest notes — improvements & not-done
 
 Everything the acceptance criteria ask for is built and tested. What follows is what I would fix

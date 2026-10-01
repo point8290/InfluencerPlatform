@@ -13,9 +13,12 @@ internal credit accounting.
 | **Payments** | Stripe Checkout, test mode                                                                |
 | **Frontend** | React 19 + Vite + TypeScript                                                              |
 | **Tests**    | Jest against a real MySQL schema built from the real migrations                           |
+| **Events**   | Transactional outbox → Kafka (KRaft), relayed by `npm run outbox:relay`                   |
+| **Analytics**| Python (FastAPI + Streamlit), Snowflake with RBAC & governance policies, Redis cache      |
 
 **Design reasoning lives in [DESIGN.md](DESIGN.md).** The HTTP contract and flow diagrams live in
-[docs/API.md](docs/API.md).
+[docs/API.md](docs/API.md). The analytics pipeline, RBAC model and governance policies are
+documented in [analytics/README.md](analytics/README.md).
 
 ---
 
@@ -286,7 +289,7 @@ verify with would only prove the library agrees with itself.
 ```
 backend/
   config/sequelize.config.js   connection settings for sequelize-cli
-  migrations/                  9 tables, foreign-key order
+  migrations/                  10 tables, foreign-key order
   seeders/                     modules, currencies, plans
   scripts/create-checkout.ts   walkthrough helper
   src/
@@ -300,7 +303,14 @@ frontend/src/
   api/client.ts                typed API client + error envelope
   auth/AuthContext.tsx
   pages/                       auth, wallet, campaigns
+  src/outbox/                  domain events, transactional outbox, Kafka relay
+  scripts/set-user-role.ts     operator-only role changes (RBAC)
+analytics/                     Python analytics service — see analytics/README.md
+  src/analytics_service/       FastAPI API, Kafka consumer, RBAC, Redis cache, Snowflake access
+  dashboard/app.py             Streamlit dashboard
+  snowflake/                   bootstrap, RBAC, tables, views, governance policies (SQL)
 docker/mysql/init.sql          creates both databases
+docker/kafka/create-topics.sh  creates the event topics
 ```
 
 ---

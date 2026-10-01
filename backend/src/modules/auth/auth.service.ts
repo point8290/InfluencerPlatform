@@ -5,6 +5,7 @@ import {
   verifyPassword,
 } from "../../lib/password";
 import { signAccessToken } from "../../lib/jwt";
+import { recordEvent } from "../../outbox/recordEvent";
 import {
   ConflictError,
   InvalidCredentialsError,
@@ -202,6 +203,12 @@ export async function signup(body: unknown): Promise<AuthResult> {
         { transaction },
       );
 
+      await recordEvent(transaction, "user.registered", {
+        user_id: created.id,
+        email: created.email,
+        role: created.role,
+      });
+
       return created;
     });
   } catch (error) {
@@ -214,7 +221,7 @@ export async function signup(body: unknown): Promise<AuthResult> {
     throw error;
   }
 
-  return { user: toPublicUser(user), token: signAccessToken(user.id) };
+  return { user: toPublicUser(user), token: signAccessToken(user.id, user.role) };
 }
 
 /**
@@ -241,7 +248,7 @@ export async function login(body: unknown): Promise<AuthResult> {
     throw new InvalidCredentialsError();
   }
 
-  return { user: toPublicUser(user), token: signAccessToken(user.id) };
+  return { user: toPublicUser(user), token: signAccessToken(user.id, user.role) };
 }
 
 /**

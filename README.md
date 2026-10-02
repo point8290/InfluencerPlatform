@@ -350,7 +350,6 @@ analytics/                     Python analytics service — see analytics/README
   dashboard/app.py             Streamlit dashboard
   snowflake/                   bootstrap, RBAC, tables, views, governance policies (SQL)
 docker/mysql/init.sql          creates both databases
-docker/kafka/create-topics.sh  creates the event topics
 ```
 
 ---

@@ -150,12 +150,35 @@ services:
     depends_on:
       kafka:
         condition: service_healthy
-    entrypoint: ["/bin/sh", "/init/create-topics.sh"]
-    environment:
-      KAFKA_BOOTSTRAP: kafka:9092
-      KAFKA_TOPIC_PREFIX: platform
-    volumes:
-      - ./docker/kafka/create-topics.sh:/init/create-topics.sh:ro
+    # The script is inline rather than a mounted .sh file on purpose: a file
+    # checked out on Windows gets CRLF line endings (`set -eu\r` fails with
+    # exit 2), and a bind mount can silently fail on some Docker Desktop
+    # setups. YAML normalises line endings, so this works on every host.
+    #
+    # Topics are created explicitly (auto-create is off on the broker) and
+    # idempotently (--if-not-exists). `$$` is a literal `$` to Compose.
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -eu
+        P=platform
+        THIRTY_DAYS=2592000000
+        NINETY_DAYS=7776000000
+        create() {
+          /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists \
+            --topic "$$1" --partitions "$$2" --replication-factor 1 \
+            --config retention.ms="$$3" --config cleanup.policy=delete
+          echo "topic ready: $$1"
+        }
+        # Domain events, keyed by aggregate id. Kafka is a buffer here, not the
+        # system of record (MySQL is), so 30 days covers any consumer outage.
+        create "$$P.users.v1"           3 "$$THIRTY_DAYS"
+        create "$$P.payments.v1"        3 "$$THIRTY_DAYS"
+        create "$$P.campaigns.v1"       3 "$$THIRTY_DAYS"
+        # Analytics API access audit -> GOVERNANCE.API_ACCESS_LOG.
+        create "$$P.analytics-audit.v1" 3 "$$THIRTY_DAYS"
+        # Events that failed validation; longer retention because a human must look.
+        create "$$P.analytics-dlq.v1"   1 "$$NINETY_DAYS"
     restart: "no"
 
   redis:

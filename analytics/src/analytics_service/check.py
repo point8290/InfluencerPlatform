@@ -21,8 +21,9 @@ def _hint(error: Exception) -> str:
     text = str(error)
     if "JWT token is invalid" in text or "390144" in text:
         return (
-            "the public key set on the user does not match your private key "
-            "(redo the ALTER USER ... RSA_PUBLIC_KEY step)"
+            "Snowflake rejected the key: compare 'Key fingerprint' above with "
+            "RSA_PUBLIC_KEY_FP in DESC USER; if they differ, redo ALTER USER ... RSA_PUBLIC_KEY. "
+            "If they match, check the clock line above"
         )
     if "Incorrect username or password" in text or "250001" in text or "404" in text:
         return "SNOWFLAKE_ACCOUNT looks wrong; use the account identifier, e.g. ABCDEFG-XY12345"
@@ -34,6 +35,46 @@ def _hint(error: Exception) -> str:
     if "No such file" in text or "private key" in text.lower():
         return "the key file was not found at SNOWFLAKE_PRIVATE_KEY_PATH"
     return "see the error above"
+
+
+def _key_fingerprint(path: str | None, passphrase: Any) -> str:
+    """SHA256 fingerprint of the public half, in Snowflake's RSA_PUBLIC_KEY_FP format."""
+    import base64
+    import hashlib
+    from pathlib import Path
+
+    from cryptography.hazmat.primitives import serialization
+
+    if not path:
+        return "(no SNOWFLAKE_PRIVATE_KEY_PATH)"
+    key = serialization.load_pem_private_key(
+        Path(path).read_bytes(),
+        password=passphrase.get_secret_value().encode() if passphrase else None,
+    )
+    der = key.public_key().public_bytes(
+        serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo
+    )
+    return "SHA256:" + base64.b64encode(hashlib.sha256(der).digest()).decode()
+
+
+def _clock_skew_s(account: str) -> float | None:
+    """Seconds this machine's clock is ahead of Snowflake's (from the HTTP Date header)."""
+    import email.utils
+    import time
+    import urllib.error
+    import urllib.request
+
+    url = f"https://{account}.snowflakecomputing.com/"
+    try:
+        with urllib.request.urlopen(url, timeout=10) as response:  # noqa: S310 - fixed https URL
+            date = response.headers.get("Date")
+    except urllib.error.HTTPError as error:
+        date = error.headers.get("Date")
+    except Exception:  # noqa: BLE001 - network trouble shows up in the login checks
+        return None
+    if not date:
+        return None
+    return time.time() - email.utils.parsedate_to_datetime(date).timestamp()
 
 
 def _check(label: str, fn: Any) -> bool:
@@ -60,7 +101,26 @@ def _scalar(conn: Any, sql: str) -> Any:
 def run() -> None:
     s = get_settings()
     print(f"Snowflake account: {s.snowflake_account or '(SNOWFLAKE_ACCOUNT is empty!)'}")
-    print(f"Key file:          {s.snowflake_private_key_path}\n")
+    print(f"Key file:          {s.snowflake_private_key_path}")
+    try:
+        fingerprint = _key_fingerprint(
+            s.snowflake_private_key_path, s.snowflake_private_key_passphrase
+        )
+    except Exception as error:  # noqa: BLE001
+        fingerprint = f"(could not read key: {error})"
+    print(f"Key fingerprint:   {fingerprint}")
+    print("                   must equal RSA_PUBLIC_KEY_FP from: DESC USER ANALYTICS_API_SVC;")
+    skew = _clock_skew_s(s.snowflake_account) if s.snowflake_account else None
+    if skew is None:
+        print("Clock:             could not compare with Snowflake")
+    elif abs(skew) > 30:
+        print(
+            f"Clock:             OFF BY {skew:+.0f}s vs Snowflake. Key-pair logins fail when the "
+            "clock is wrong; restart Docker Desktop (or run `wsl --shutdown` on Windows)."
+        )
+    else:
+        print(f"Clock:             ok ({skew:+.1f}s vs Snowflake)")
+    print()
     results: list[bool] = []
 
     print(f"Loader ({s.snowflake_loader_user} as {s.snowflake_loader_role}):")

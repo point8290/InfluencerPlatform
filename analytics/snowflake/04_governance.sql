@@ -12,6 +12,13 @@
 -- entitlements itself. The roles these policies constrain cannot alter them.
 -- ============================================================================
 
+-- Enterprise-only privileges (tags, masking, row access). On Standard edition
+-- the first of these fails with "Unsupported feature"; nothing below can run.
+USE ROLE ACCOUNTADMIN;
+GRANT APPLY MASKING POLICY    ON ACCOUNT TO ROLE ANALYTICS_GOVERNOR;
+GRANT APPLY ROW ACCESS POLICY ON ACCOUNT TO ROLE ANALYTICS_GOVERNOR;
+GRANT APPLY TAG               ON ACCOUNT TO ROLE ANALYTICS_GOVERNOR;
+
 USE ROLE SECURITYADMIN;
 -- The governor owns the objects below and needs to reference RAW for erasure.
 GRANT USAGE ON SCHEMA INFLUENCER_ANALYTICS.RAW TO ROLE ANALYTICS_GOVERNOR;

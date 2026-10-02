@@ -17,9 +17,9 @@
 --   finance -> ANALYTICS_FINANCE    + money
 --   admin   -> ANALYTICS_ADMIN      + PII, RAW, governance views
 --
--- Separation of duties: ANALYTICS_GOVERNOR owns policies and tags but is NOT
--- granted data-read entitlements; data roles cannot alter the policies that
--- constrain them.
+-- Separation of duties: ANALYTICS_GOVERNOR maintains the entitlement map
+-- (GOVERNANCE.ROLE_MODULE_ACCESS) but is NOT granted data-read entitlements;
+-- the data roles cannot alter the rules that constrain them.
 -- ============================================================================
 
 USE ROLE USERADMIN;
@@ -41,7 +41,7 @@ CREATE ROLE IF NOT EXISTS ANALYTICS_MEMBER   COMMENT = 'Platform role: member.';
 CREATE ROLE IF NOT EXISTS ANALYTICS_ANALYST  COMMENT = 'Platform role: analyst.';
 CREATE ROLE IF NOT EXISTS ANALYTICS_FINANCE  COMMENT = 'Platform role: finance.';
 CREATE ROLE IF NOT EXISTS ANALYTICS_ADMIN    COMMENT = 'Platform role: admin.';
-CREATE ROLE IF NOT EXISTS ANALYTICS_GOVERNOR COMMENT = 'Owns tags and policies. No data entitlements.';
+CREATE ROLE IF NOT EXISTS ANALYTICS_GOVERNOR COMMENT = 'Maintains entitlements. No data entitlements.';
 
 USE ROLE SECURITYADMIN;
 

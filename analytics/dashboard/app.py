@@ -316,7 +316,7 @@ def render_users() -> None:
         result = api("/v1/metrics/top-spenders", limit=20, **window)
         st.dataframe(frame(result), use_container_width=True, hide_index=True)
         if "pii:read" not in perms:
-            st.caption("Emails are pseudonymised by Snowflake's PII masking policy for your role.")
+            st.caption("Emails are pseudonymised by Snowflake for your role.")
         cached_badge(result)
     with right:
         st.subheader("Signups")

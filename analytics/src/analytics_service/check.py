@@ -27,6 +27,8 @@ def _hint(error: Exception) -> str:
         )
     if "Incorrect username or password" in text or "250001" in text or "404" in text:
         return "SNOWFLAKE_ACCOUNT looks wrong; use the account identifier, e.g. ABCDEFG-XY12345"
+    if "CORE." in text and "does not exist" in text:
+        return "CORE views missing: run 03_core_views.sql and then 04_governance.sql"
     if "does not exist or not authorized" in text:
         return (
             "an object or grant is missing; "
@@ -168,6 +170,32 @@ def run() -> None:
                 conn.close()
 
         results.append(_check(f"{platform_role:<8} -> {sf_role}", api_check))
+
+    print("\nGovernance (as ANALYTICS_ANALYST, who must NOT see emails or money):")
+
+    def masking_check() -> str:
+        conn = connect(
+            s,
+            user=s.snowflake_api_user,
+            role=SNOWFLAKE_ROLES["analyst"],
+            warehouse=s.snowflake_warehouse,
+        )
+        try:
+            leaked_emails = _scalar(conn, "SELECT COUNT_IF(email LIKE '%@%') FROM CORE.DIM_USERS")
+            leaked_amounts = _scalar(
+                conn,
+                "SELECT COUNT_IF(amount_paise IS NOT NULL) FROM CORE.FCT_CREDIT_PURCHASES",
+            )
+        finally:
+            conn.close()
+        if leaked_emails or leaked_amounts:
+            raise RuntimeError(
+                f"{leaked_emails} real email(s) and {leaked_amounts} amount(s) visible to an "
+                "analyst; re-run snowflake/04_governance.sql"
+            )
+        return "emails pseudonymised, amounts hidden"
+
+    results.append(_check("masking", masking_check))
 
     passed = sum(results)
     print(f"\n{passed}/{len(results)} checks passed.")

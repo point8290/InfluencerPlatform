@@ -1,20 +1,31 @@
 -- ============================================================================
--- 03 — CORE: the governed, modelled layer.
+-- 03 — Base models: RAW events reshaped into readable views.
 --
--- Views, not tables: they are always exactly as fresh as RAW, need no
--- orchestration, and masking/row access policies attach to their columns.
--- If query cost grows, any of these can become a DYNAMIC TABLE with the same
--- name and columns (TARGET_LAG = '5 minutes') without touching a consumer —
--- RAW has CHANGE_TRACKING enabled for exactly that reason.
+-- These live in RAW, which only the loader and admins can read, because they
+-- are UNMASKED: real emails, real money. Nobody queries them directly.
+-- 04_governance.sql builds the CORE views on top of them, adding masking and
+-- row filtering; CORE is the only schema dashboards and analysts read.
 --
--- Owned by SYSADMIN. Readers need SELECT on the view only, never on RAW.
+-- ALWAYS RUN 04 AFTER THIS FILE. This script drops the CORE views so that
+-- nothing can ever read an ungoverned version: between 03 and 04, CORE is
+-- empty and the API fails closed instead of leaking.
+--
+-- Views, not tables: always as fresh as RAW, no orchestration. RAW has
+-- CHANGE_TRACKING on, so any of these can later become a dynamic table.
 -- ============================================================================
 
 USE ROLE SYSADMIN;
 USE DATABASE INFLUENCER_ANALYTICS;
 
-CREATE OR REPLACE VIEW CORE.DIM_USERS
-  COMMENT = 'One row per user with their latest platform role. email is PII (masked by tag).'
+-- Fail closed: remove any CORE view an earlier version of this script created
+-- without governance. 04_governance.sql recreates them.
+DROP VIEW IF EXISTS CORE.FCT_CAMPAIGNS;
+DROP VIEW IF EXISTS CORE.FCT_CAMPAIGN_FUNDINGS;
+DROP VIEW IF EXISTS CORE.FCT_CREDIT_PURCHASES;
+DROP VIEW IF EXISTS CORE.DIM_USERS;
+
+CREATE OR REPLACE VIEW RAW.BASE_DIM_USERS
+  COMMENT = 'UNMASKED. One row per user with their latest platform role.'
 AS
 WITH registered AS (
   SELECT
@@ -44,8 +55,8 @@ SELECT
 FROM registered r
 LEFT JOIN latest_role l ON l.user_id = r.user_id;
 
-CREATE OR REPLACE VIEW CORE.FCT_CREDIT_PURCHASES
-  COMMENT = 'One row per granted credit purchase. amount_paise is FINANCIAL (masked by tag).'
+CREATE OR REPLACE VIEW RAW.BASE_FCT_CREDIT_PURCHASES
+  COMMENT = 'UNMASKED. One row per granted credit purchase.'
 AS
 SELECT
   event_id,
@@ -62,7 +73,7 @@ SELECT
 FROM RAW.PLATFORM_EVENTS
 WHERE event_type = 'credits.purchased';
 
-CREATE OR REPLACE VIEW CORE.FCT_CAMPAIGN_FUNDINGS
+CREATE OR REPLACE VIEW RAW.BASE_FCT_CAMPAIGN_FUNDINGS
   COMMENT = 'One row per funded campaign: the credit spend.'
 AS
 SELECT
@@ -78,7 +89,7 @@ SELECT
 FROM RAW.PLATFORM_EVENTS
 WHERE event_type = 'campaign.funded';
 
-CREATE OR REPLACE VIEW CORE.FCT_CAMPAIGNS
+CREATE OR REPLACE VIEW RAW.BASE_FCT_CAMPAIGNS
   COMMENT = 'One row per campaign with its funding outcome, for funnel analysis.'
 AS
 WITH created AS (
@@ -100,7 +111,8 @@ SELECT
   f.currency_code,
   IFF(f.campaign_id IS NULL, 'draft', 'funded')   AS status
 FROM created c
-LEFT JOIN CORE.FCT_CAMPAIGN_FUNDINGS f ON f.campaign_id = c.campaign_id;
+LEFT JOIN RAW.BASE_FCT_CAMPAIGN_FUNDINGS f ON f.campaign_id = c.campaign_id;
 
 USE ROLE SECURITYADMIN;
-GRANT SELECT ON ALL VIEWS IN SCHEMA INFLUENCER_ANALYTICS.CORE TO ROLE CORE_READ_AR;
+-- Admins may inspect the unmasked models; nobody else is granted them.
+GRANT SELECT ON ALL VIEWS IN SCHEMA INFLUENCER_ANALYTICS.RAW TO ROLE RAW_READ_AR;

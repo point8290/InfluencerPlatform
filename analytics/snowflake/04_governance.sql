@@ -1,111 +1,51 @@
 -- ============================================================================
--- 04 — Governance policies.
+-- 04 — Governance. Runs on EVERY edition, Standard included.
 --
---   Classification   tags on every CORE column that carries PII or money
---   Masking          tag-based: tag a column and it is masked, no per-column step
---   Row access       module scoping through an entitlement map
---   Retention        scheduled purge of the access log
---   Erasure          a procedure that redacts one user's PII in RAW
---   Audit            access-history and policy-reference views
+--   Masking       emails pseudonymised, money hidden, unless the reader holds
+--                 the entitlement role (PII_READER_AR / FINANCIAL_READER_AR)
+--   Row access    fact rows filtered to the modules a role is entitled to
+--   Retention     scheduled purge of the API access log
+--   Erasure       a procedure that redacts one user's PII in RAW
+--   Audit         query history and a policy catalogue for the dashboard
 --
--- Everything here is owned by ANALYTICS_GOVERNOR, which holds no data
--- entitlements itself. The roles these policies constrain cannot alter them.
+-- HOW, WITHOUT ENTERPRISE FEATURES: the CORE views are SECURE views whose
+-- column expressions and WHERE clause test IS_ROLE_IN_SESSION() and
+-- CURRENT_ROLE() for the person running the query. Snowflake evaluates those
+-- per reader, so the same view returns real emails to an admin and
+-- pseudonyms to an analyst. SECURE hides the view body and stops the
+-- optimiser from leaking filtered-out rows, which is what makes a view a
+-- safe access-control boundary. Readers get SELECT on these views only —
+-- never on RAW, never on the salt — so there is no way around them.
+--
+-- (On Enterprise edition the same rules could move to native masking and row
+-- access policies; behaviour for readers would be identical.)
+--
+-- Run AFTER 03_core_views.sql, and again whenever 03 is re-run.
 -- ============================================================================
 
--- Enterprise-only privileges (tags, masking, row access). On Standard edition
--- the first of these fails with "Unsupported feature"; nothing below can run.
 USE ROLE ACCOUNTADMIN;
-GRANT APPLY MASKING POLICY    ON ACCOUNT TO ROLE ANALYTICS_GOVERNOR;
-GRANT APPLY ROW ACCESS POLICY ON ACCOUNT TO ROLE ANALYTICS_GOVERNOR;
-GRANT APPLY TAG               ON ACCOUNT TO ROLE ANALYTICS_GOVERNOR;
-GRANT CREATE TAG, CREATE MASKING POLICY, CREATE ROW ACCESS POLICY
-  ON SCHEMA INFLUENCER_ANALYTICS.GOVERNANCE TO ROLE ANALYTICS_GOVERNOR;
+-- The retention task is owned by SYSADMIN, so SYSADMIN must be able to run tasks.
+GRANT EXECUTE TASK ON ACCOUNT TO ROLE SYSADMIN;
+-- For the QUERY_HISTORY audit view below.
+GRANT IMPORTED PRIVILEGES ON DATABASE SNOWFLAKE TO ROLE SYSADMIN;
 
-USE ROLE SECURITYADMIN;
--- The governor owns the objects below and needs to reference RAW for erasure.
-GRANT USAGE ON SCHEMA INFLUENCER_ANALYTICS.RAW TO ROLE ANALYTICS_GOVERNOR;
-GRANT SELECT, UPDATE ON TABLE INFLUENCER_ANALYTICS.RAW.PLATFORM_EVENTS TO ROLE ANALYTICS_GOVERNOR;
-GRANT SELECT, DELETE ON TABLE INFLUENCER_ANALYTICS.GOVERNANCE.API_ACCESS_LOG TO ROLE ANALYTICS_GOVERNOR;
-
-USE ROLE ANALYTICS_GOVERNOR;
+USE ROLE SYSADMIN;
 USE DATABASE INFLUENCER_ANALYTICS;
-USE SCHEMA GOVERNANCE;
 USE WAREHOUSE ANALYTICS_WH;
 
--- ── Classification tags ─────────────────────────────────────────────────────
-CREATE TAG IF NOT EXISTS DATA_CLASSIFICATION
-  ALLOWED_VALUES 'PUBLIC', 'INTERNAL', 'CONFIDENTIAL', 'RESTRICTED'
-  COMMENT = 'Sensitivity of a column or table.';
-
-CREATE TAG IF NOT EXISTS PII
-  ALLOWED_VALUES 'EMAIL'
-  COMMENT = 'Personal data type. Columns with this tag are masked unless PII_READER_AR is in session.';
-
-CREATE TAG IF NOT EXISTS FINANCIAL
-  ALLOWED_VALUES 'AMOUNT_PAISE'
-  COMMENT = 'Money. Columns with this tag are masked unless FINANCIAL_READER_AR is in session.';
-
--- ── Masking policies ────────────────────────────────────────────────────────
--- Non-readers get a stable pseudonym rather than NULL: distinct counts and
--- joins across views still work, but the address cannot be recovered.
---
--- The hash is SALTED with a secret only the governor can read. An unsalted
--- SHA-256 of an email is not a pseudonym: anyone holding a list of candidate
--- addresses can hash them and match.
-CREATE TABLE IF NOT EXISTS PSEUDONYM_SALT (salt VARCHAR NOT NULL)
-  COMMENT = 'Single-row secret for PII_STRING_MASK. Readable by ANALYTICS_GOVERNOR only.';
-INSERT INTO PSEUDONYM_SALT (salt)
-  SELECT UUID_STRING() || UUID_STRING()
-  WHERE NOT EXISTS (SELECT 1 FROM PSEUDONYM_SALT);
-
-CREATE OR REPLACE MASKING POLICY PII_STRING_MASK AS (val VARCHAR) RETURNS VARCHAR ->
-  CASE
-    WHEN val IS NULL THEN NULL
-    WHEN IS_ROLE_IN_SESSION('PII_READER_AR') THEN val
-    ELSE 'user_' || LEFT(SHA2((SELECT MAX(salt) FROM GOVERNANCE.PSEUDONYM_SALT) || LOWER(val), 256), 12)
-  END
-  COMMENT = 'Email: clear text for PII_READER_AR, stable SHA-256 pseudonym otherwise.';
-
-CREATE OR REPLACE MASKING POLICY FINANCIAL_NUMBER_MASK AS (val NUMBER) RETURNS NUMBER ->
-  CASE
-    WHEN IS_ROLE_IN_SESSION('FINANCIAL_READER_AR') THEN val
-    ELSE NULL
-  END
-  COMMENT = 'Money: visible to FINANCIAL_READER_AR only.';
-
--- Tag-based: every column carrying the tag is masked by the matching policy,
--- including columns added later. Classification IS enforcement.
-ALTER TAG PII       SET MASKING POLICY PII_STRING_MASK;
-ALTER TAG FINANCIAL SET MASKING POLICY FINANCIAL_NUMBER_MASK;
-
--- ── Apply classification ────────────────────────────────────────────────────
-ALTER TABLE RAW.PLATFORM_EVENTS SET TAG DATA_CLASSIFICATION = 'RESTRICTED';
-ALTER TABLE GOVERNANCE.API_ACCESS_LOG SET TAG DATA_CLASSIFICATION = 'CONFIDENTIAL';
-
-ALTER VIEW CORE.DIM_USERS MODIFY COLUMN email
-  SET TAG PII = 'EMAIL', DATA_CLASSIFICATION = 'RESTRICTED';
-ALTER VIEW CORE.FCT_CREDIT_PURCHASES MODIFY COLUMN amount_paise
-  SET TAG FINANCIAL = 'AMOUNT_PAISE', DATA_CLASSIFICATION = 'CONFIDENTIAL';
-
-ALTER VIEW CORE.DIM_USERS            SET TAG DATA_CLASSIFICATION = 'CONFIDENTIAL';
-ALTER VIEW CORE.FCT_CREDIT_PURCHASES SET TAG DATA_CLASSIFICATION = 'CONFIDENTIAL';
-ALTER VIEW CORE.FCT_CAMPAIGN_FUNDINGS SET TAG DATA_CLASSIFICATION = 'INTERNAL';
-ALTER VIEW CORE.FCT_CAMPAIGNS        SET TAG DATA_CLASSIFICATION = 'INTERNAL';
-
--- ── Row access: module scoping ──────────────────────────────────────────────
--- Roles with ALL_MODULES_AR see every row. Any other role sees only modules it
--- is mapped to here — e.g. a reports-only analyst team gets its own role with
--- a single row, and no new policy.
-CREATE TABLE IF NOT EXISTS ROLE_MODULE_ACCESS (
+-- ── Governance data ─────────────────────────────────────────────────────────
+-- Which roles may see which modules. Roles holding ALL_MODULES_AR see every
+-- module and need no rows here. Change access by editing rows, not views.
+CREATE TABLE IF NOT EXISTS GOVERNANCE.ROLE_MODULE_ACCESS (
   role_name    VARCHAR(255) NOT NULL,
   module_code  VARCHAR(100) NOT NULL,
   granted_by   VARCHAR(255) NOT NULL DEFAULT CURRENT_USER(),
   granted_at   TIMESTAMP_TZ NOT NULL DEFAULT CURRENT_TIMESTAMP(),
   CONSTRAINT pk_role_module_access PRIMARY KEY (role_name, module_code)
 )
-COMMENT = 'Entitlement map for MODULE_SCOPE. Change rows, not the policy.';
+COMMENT = 'Entitlement map: role -> module rows it may see in CORE fact views.';
 
-MERGE INTO ROLE_MODULE_ACCESS t
+MERGE INTO GOVERNANCE.ROLE_MODULE_ACCESS t
 USING (
   SELECT 'ANALYTICS_ANALYST' AS role_name, column1 AS module_code
   FROM VALUES ('campaigns'), ('reports'), ('discovery')
@@ -113,25 +53,105 @@ USING (
 ON t.role_name = s.role_name AND t.module_code = s.module_code
 WHEN NOT MATCHED THEN INSERT (role_name, module_code) VALUES (s.role_name, s.module_code);
 
-CREATE OR REPLACE ROW ACCESS POLICY MODULE_SCOPE AS (row_module_code VARCHAR) RETURNS BOOLEAN ->
-  IS_ROLE_IN_SESSION('ALL_MODULES_AR')
-  OR EXISTS (
-    SELECT 1
-    FROM GOVERNANCE.ROLE_MODULE_ACCESS m
-    WHERE m.module_code = row_module_code
-      AND IS_ROLE_IN_SESSION(m.role_name)
-  )
-  COMMENT = 'Rows visible only for modules the session is entitled to.';
+-- Secret mixed into email pseudonyms. Without it, anyone with a list of
+-- candidate addresses could hash them and match. Granted to nobody: only the
+-- views (which run with their owner's rights) can read it.
+CREATE TABLE IF NOT EXISTS GOVERNANCE.PSEUDONYM_SALT (salt VARCHAR NOT NULL)
+  COMMENT = 'Single-row secret for email pseudonyms. Never grant SELECT on this.';
+INSERT INTO GOVERNANCE.PSEUDONYM_SALT (salt)
+  SELECT UUID_STRING() || UUID_STRING()
+  WHERE NOT EXISTS (SELECT 1 FROM GOVERNANCE.PSEUDONYM_SALT);
 
-ALTER VIEW CORE.FCT_CREDIT_PURCHASES  ADD ROW ACCESS POLICY MODULE_SCOPE ON (module_code);
-ALTER VIEW CORE.FCT_CAMPAIGN_FUNDINGS ADD ROW ACCESS POLICY MODULE_SCOPE ON (module_code);
-ALTER VIEW CORE.FCT_CAMPAIGNS         ADD ROW ACCESS POLICY MODULE_SCOPE ON (module_code);
+-- ── Governed CORE views ─────────────────────────────────────────────────────
+-- Masking rules, used identically in every view:
+--   email         clear text with PII_READER_AR, else 'user_' + 12 hex chars of
+--                 SHA-256(salt || lower(email)) — stable, so joins and distinct
+--                 counts still work, but not reversible
+--   amount_paise  value with FINANCIAL_READER_AR, else NULL
+-- Row rule for fact views:
+--   ALL_MODULES_AR in session, or the current role is mapped to the row's
+--   module in GOVERNANCE.ROLE_MODULE_ACCESS.
+
+CREATE OR REPLACE SECURE VIEW CORE.DIM_USERS
+  COMMENT = 'One row per user. email is PII: pseudonymised unless PII_READER_AR.'
+AS
+SELECT
+  u.user_id,
+  CASE
+    WHEN u.email IS NULL THEN NULL
+    WHEN IS_ROLE_IN_SESSION('PII_READER_AR') THEN u.email
+    ELSE 'user_' || LEFT(SHA2(s.salt || LOWER(u.email), 256), 12)
+  END AS email,
+  u.platform_role,
+  u.registered_at
+FROM RAW.BASE_DIM_USERS u
+CROSS JOIN (SELECT MAX(salt) AS salt FROM GOVERNANCE.PSEUDONYM_SALT) s;
+
+CREATE OR REPLACE SECURE VIEW CORE.FCT_CREDIT_PURCHASES
+  COMMENT = 'One row per credit purchase. amount_paise only with FINANCIAL_READER_AR; module-scoped.'
+AS
+SELECT
+  event_id,
+  occurred_at,
+  payment_id,
+  user_id,
+  wallet_id,
+  currency_code,
+  module_code,
+  purchase_kind,
+  plan_id,
+  credits,
+  IFF(IS_ROLE_IN_SESSION('FINANCIAL_READER_AR'), amount_paise, NULL) AS amount_paise
+FROM RAW.BASE_FCT_CREDIT_PURCHASES
+WHERE IS_ROLE_IN_SESSION('ALL_MODULES_AR')
+   OR module_code IN (
+        SELECT module_code FROM GOVERNANCE.ROLE_MODULE_ACCESS
+        WHERE role_name = CURRENT_ROLE()
+      );
+
+CREATE OR REPLACE SECURE VIEW CORE.FCT_CAMPAIGN_FUNDINGS
+  COMMENT = 'One row per funded campaign. Module-scoped.'
+AS
+SELECT
+  event_id,
+  occurred_at,
+  campaign_id,
+  user_id,
+  wallet_id,
+  currency_code,
+  module_code,
+  credits,
+  balance_after
+FROM RAW.BASE_FCT_CAMPAIGN_FUNDINGS
+WHERE IS_ROLE_IN_SESSION('ALL_MODULES_AR')
+   OR module_code IN (
+        SELECT module_code FROM GOVERNANCE.ROLE_MODULE_ACCESS
+        WHERE role_name = CURRENT_ROLE()
+      );
+
+CREATE OR REPLACE SECURE VIEW CORE.FCT_CAMPAIGNS
+  COMMENT = 'One row per campaign with funding outcome. Module-scoped.'
+AS
+SELECT
+  campaign_id,
+  user_id,
+  module_code,
+  created_at,
+  funded_at,
+  funded_credits,
+  currency_code,
+  status
+FROM RAW.BASE_FCT_CAMPAIGNS
+WHERE IS_ROLE_IN_SESSION('ALL_MODULES_AR')
+   OR module_code IN (
+        SELECT module_code FROM GOVERNANCE.ROLE_MODULE_ACCESS
+        WHERE role_name = CURRENT_ROLE()
+      );
 
 -- ── Retention ───────────────────────────────────────────────────────────────
--- The access log is kept 400 days (a year plus a quarter of overlap for
--- annual reviews), then purged. RAW events are the financial record and are
--- not purged here; PII inside them is handled by ERASE_USER_PII.
-CREATE OR REPLACE TASK PURGE_API_ACCESS_LOG
+-- The access log is kept 400 days, then purged. RAW events are the financial
+-- record and are not purged; PII inside them is handled by ERASE_USER_PII.
+CREATE OR REPLACE TASK GOVERNANCE.PURGE_API_ACCESS_LOG
   WAREHOUSE = ANALYTICS_WH
   SCHEDULE = 'USING CRON 15 3 * * * UTC'
   COMMENT = 'Retention: delete API access log rows older than 400 days.'
@@ -139,15 +159,14 @@ AS
   DELETE FROM GOVERNANCE.API_ACCESS_LOG
   WHERE occurred_at < DATEADD(day, -400, CURRENT_TIMESTAMP());
 
-ALTER TASK PURGE_API_ACCESS_LOG RESUME;
+ALTER TASK GOVERNANCE.PURGE_API_ACCESS_LOG RESUME;
 
 -- ── Right to erasure ────────────────────────────────────────────────────────
 -- Redacts one user's email everywhere it appears in RAW. Financial facts are
--- kept (they are keyed by user_id, not identity) so totals do not change.
--- Time Travel still holds the pre-erasure rows for the database's retention
--- period (1 day as shipped), then Fail-safe for 7 more — state both in any
--- erasure SLA.
-CREATE OR REPLACE PROCEDURE ERASE_USER_PII(TARGET_USER_ID NUMBER)
+-- kept (keyed by user_id, not identity) so totals do not change. Time Travel
+-- keeps pre-erasure rows for the database retention (1 day), then Fail-safe
+-- for 7 more — state both in any erasure SLA.
+CREATE OR REPLACE PROCEDURE GOVERNANCE.ERASE_USER_PII(TARGET_USER_ID NUMBER)
   RETURNS VARCHAR
   LANGUAGE SQL
   EXECUTE AS OWNER
@@ -164,48 +183,45 @@ BEGIN
 END;
 $$;
 
--- ── Audit views ─────────────────────────────────────────────────────────────
--- Direct-SQL access to anything in this database (Snowsight, notebooks, BI).
--- ACCOUNT_USAGE has up to ~3h latency; API access is in API_ACCESS_LOG.
-CREATE OR REPLACE VIEW V_WAREHOUSE_ACCESS_HISTORY
-  COMMENT = 'Who read which governed object, from ACCOUNT_USAGE.ACCESS_HISTORY.'
+-- ── Audit and catalogue views ───────────────────────────────────────────────
+-- Every query against this database, from any tool. API queries carry a
+-- QUERY_TAG holding the request_id, so they join to GOVERNANCE.API_ACCESS_LOG.
+-- (ACCOUNT_USAGE lags by up to ~45 minutes.)
+CREATE OR REPLACE VIEW GOVERNANCE.V_QUERY_AUDIT
+  COMMENT = 'Who queried INFLUENCER_ANALYTICS, as which role, from ACCOUNT_USAGE.QUERY_HISTORY.'
 AS
 SELECT
-  ah.query_start_time,
-  ah.user_name,
-  obj.value:objectName::VARCHAR  AS object_name,
-  obj.value:objectDomain::VARCHAR AS object_domain,
-  ah.query_id
-FROM SNOWFLAKE.ACCOUNT_USAGE.ACCESS_HISTORY ah,
-     LATERAL FLATTEN(input => ah.base_objects_accessed) obj
-WHERE obj.value:objectName::VARCHAR ILIKE 'INFLUENCER_ANALYTICS.%';
+  start_time,
+  user_name,
+  role_name,
+  query_type,
+  TRY_PARSE_JSON(query_tag):request_id::VARCHAR AS api_request_id,
+  LEFT(query_text, 500)                         AS query_text,
+  execution_status,
+  query_id
+FROM SNOWFLAKE.ACCOUNT_USAGE.QUERY_HISTORY
+WHERE database_name = 'INFLUENCER_ANALYTICS';
 
-CREATE OR REPLACE VIEW V_POLICY_REFERENCES
-  COMMENT = 'Every masking / row access policy attached within INFLUENCER_ANALYTICS.'
+-- What the dashboard's governance tab lists. On Standard edition the rules
+-- live in the view definitions above, so they are catalogued here by hand;
+-- keep this in step with them.
+CREATE OR REPLACE VIEW GOVERNANCE.V_POLICY_REFERENCES
+  COMMENT = 'Catalogue of the governance rules applied in CORE views.'
 AS
-SELECT
-  policy_name,
-  policy_kind,
-  ref_database_name || '.' || ref_schema_name || '.' || ref_entity_name AS object_name,
-  ref_column_name,
-  tag_name,
-  policy_status
-FROM SNOWFLAKE.ACCOUNT_USAGE.POLICY_REFERENCES
-WHERE ref_database_name = 'INFLUENCER_ANALYTICS';
-
-CREATE OR REPLACE VIEW V_TAGGED_COLUMNS
-  COMMENT = 'Classification inventory: every tagged object and column.'
-AS
-SELECT
-  tag_name,
-  tag_value,
-  object_database || '.' || object_schema || '.' || object_name AS object_name,
-  column_name,
-  domain
-FROM SNOWFLAKE.ACCOUNT_USAGE.TAG_REFERENCES
-WHERE object_database = 'INFLUENCER_ANALYTICS' AND object_deleted IS NULL;
+SELECT * FROM VALUES
+  ('EMAIL_PSEUDONYMISATION', 'MASKING',    'INFLUENCER_ANALYTICS.CORE.DIM_USERS',             'EMAIL',        'PII_READER_AR',       'ACTIVE'),
+  ('AMOUNT_MASKING',         'MASKING',    'INFLUENCER_ANALYTICS.CORE.FCT_CREDIT_PURCHASES',  'AMOUNT_PAISE', 'FINANCIAL_READER_AR', 'ACTIVE'),
+  ('MODULE_SCOPE',           'ROW_ACCESS', 'INFLUENCER_ANALYTICS.CORE.FCT_CREDIT_PURCHASES',  'MODULE_CODE',  'ALL_MODULES_AR',      'ACTIVE'),
+  ('MODULE_SCOPE',           'ROW_ACCESS', 'INFLUENCER_ANALYTICS.CORE.FCT_CAMPAIGN_FUNDINGS', 'MODULE_CODE',  'ALL_MODULES_AR',      'ACTIVE'),
+  ('MODULE_SCOPE',           'ROW_ACCESS', 'INFLUENCER_ANALYTICS.CORE.FCT_CAMPAIGNS',         'MODULE_CODE',  'ALL_MODULES_AR',      'ACTIVE')
+  AS t (policy_name, policy_kind, object_name, ref_column_name, tag_name, policy_status);
 
 USE ROLE SECURITYADMIN;
+GRANT SELECT ON ALL VIEWS IN SCHEMA INFLUENCER_ANALYTICS.CORE       TO ROLE CORE_READ_AR;
 GRANT SELECT ON ALL VIEWS IN SCHEMA INFLUENCER_ANALYTICS.GOVERNANCE TO ROLE GOVERNANCE_READ_AR;
--- Erasure is an admin action, executed with the governor's (owner's) rights.
-GRANT USAGE ON PROCEDURE INFLUENCER_ANALYTICS.GOVERNANCE.ERASE_USER_PII(NUMBER) TO ROLE ANALYTICS_ADMIN;
+-- The governor maintains the entitlement map (but still cannot read data).
+GRANT SELECT, INSERT, DELETE ON TABLE INFLUENCER_ANALYTICS.GOVERNANCE.ROLE_MODULE_ACCESS
+  TO ROLE ANALYTICS_GOVERNOR;
+-- Erasure is an admin action, executed with the owner's (SYSADMIN's) rights.
+GRANT USAGE ON PROCEDURE INFLUENCER_ANALYTICS.GOVERNANCE.ERASE_USER_PII(NUMBER)
+  TO ROLE ANALYTICS_ADMIN;

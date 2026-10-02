@@ -77,16 +77,22 @@ token and is never read from the request.
 
 | Policy | Mechanism | File |
 | --- | --- | --- |
-| PII masking | `PII` tag → `PII_STRING_MASK`. Emails show in clear text only with `PII_READER_AR`, otherwise as a salted SHA-256 pseudonym (joins and distinct counts still work). | `04_governance.sql` |
-| Financial masking | `FINANCIAL` tag → `FINANCIAL_NUMBER_MASK`. `amount_paise` is NULL without `FINANCIAL_READER_AR`. | `04_governance.sql` |
-| Row access | `MODULE_SCOPE` on every fact view. Roles without `ALL_MODULES_AR` see only the modules listed in `GOVERNANCE.ROLE_MODULE_ACCESS`. | `04_governance.sql` |
-| Classification | `DATA_CLASSIFICATION` tag on every table and view, and on each sensitive column. | `04_governance.sql` |
+| PII masking | Emails show in clear text only with `PII_READER_AR`, otherwise as a salted SHA-256 pseudonym (joins and distinct counts still work). | `04_governance.sql` |
+| Financial masking | `amount_paise` is NULL without `FINANCIAL_READER_AR`. | `04_governance.sql` |
+| Row access | Fact views return only rows for modules the role may see: every module with `ALL_MODULES_AR`, otherwise the modules listed for the role in `GOVERNANCE.ROLE_MODULE_ACCESS`. | `04_governance.sql` |
 | Least privilege | Separate access roles and functional roles; `MANAGED ACCESS` schemas; the loader can only write RAW; readers never touch RAW. | `01_rbac.sql` |
-| Separation of duties | `ANALYTICS_GOVERNOR` owns the policies but holds no data entitlements. | `01_rbac.sql` |
+| Separation of duties | `ANALYTICS_GOVERNOR` maintains the entitlement map but holds no data entitlements. | `01_rbac.sql`, `04_governance.sql` |
 | Retention | Daily task purges `API_ACCESS_LOG` rows older than 400 days. Kafka topics keep 30 days (DLQ: 90). | `04_governance.sql`, `docker-compose.yml` (kafka-init) |
 | Right to erasure | `CALL GOVERNANCE.ERASE_USER_PII(<user_id>)` redacts the email in RAW and keeps financial facts. Time Travel keeps the old rows for 1 more day (the retention set in `00_bootstrap.sql`), then Snowflake Fail-safe for 7. | `04_governance.sql` |
-| Audit | Every API request (allowed, denied or error) goes to `GOVERNANCE.API_ACCESS_LOG`. Its `request_id` is also the Snowflake `QUERY_TAG`, so it joins to `QUERY_HISTORY`. Direct SQL access is in `V_WAREHOUSE_ACCESS_HISTORY`. | `audit.py`, `02_raw.sql` |
+| Audit | Every API request (allowed, denied or error) goes to `GOVERNANCE.API_ACCESS_LOG`. Its `request_id` is also the Snowflake `QUERY_TAG`, so it joins to `QUERY_HISTORY`. Direct SQL access is in `GOVERNANCE.V_QUERY_AUDIT`. | `audit.py`, `02_raw.sql`, `04_governance.sql` |
 | Cost | Resource monitor (suspends at 100% of quota), auto-suspend at 60 s, 120 s statement timeout on `ANALYTICS_WH`. | `00_bootstrap.sql` |
+
+**How the rules are enforced (any edition, Standard included).** The `CORE` views are
+**secure views**. Their masking expressions and row filter check the role of whoever is running
+the query (`IS_ROLE_IN_SESSION` / `CURRENT_ROLE()`), so one view returns real emails to an admin
+and pseudonyms to an analyst. The unmasked models (`RAW.BASE_*`) and the salt are never granted to
+readers, so the views can't be bypassed. On Enterprise edition the same rules could move to
+native masking and row access policies with identical results for readers.
 
 > The API's service user holds every reader role so it can switch roles per request. That is
 > only safe because secondary roles are disabled (`DEFAULT_SECONDARY_ROLES = ()` on the user,
@@ -112,8 +118,8 @@ Then run the scripts in order as `ACCOUNTADMIN` (Snowsight worksheet or `snow sq
 snowflake/00_bootstrap.sql   warehouses, database, schemas, resource monitor
 snowflake/01_rbac.sql        roles, grants, service users
 snowflake/02_raw.sql         RAW.PLATFORM_EVENTS, GOVERNANCE.API_ACCESS_LOG
-snowflake/03_core_views.sql  CORE.DIM_USERS, FCT_CREDIT_PURCHASES, FCT_CAMPAIGN_FUNDINGS, FCT_CAMPAIGNS
-snowflake/04_governance.sql  tags, masking, row access, retention, erasure, audit views
+snowflake/03_core_views.sql  unmasked base models in RAW (RAW.BASE_*), readable by admins only
+snowflake/04_governance.sql  governed CORE views (masking + row filtering), retention, erasure, audit
 ```
 
 Attach the public key (paste the key body without the header and footer lines):
@@ -125,9 +131,9 @@ ALTER USER ANALYTICS_API_SVC    SET RSA_PUBLIC_KEY = 'MIIBIjANBg...';
 
 Every script is idempotent, so running it again converges instead of failing.
 
-> **Edition.** `00`–`03` run on any edition. `04_governance.sql` uses tags, masking policies
-> and row access policies, which need **Enterprise** edition or higher; on Standard it fails
-> with "Unsupported feature". Snowflake trials let you pick the edition at signup.
+All five scripts run on any Snowflake edition, Standard included. Always run `04` after `03`:
+`03` deliberately drops the `CORE` views, so until `04` recreates them the API fails rather than
+serving ungoverned data.
 
 ### 2. Check the connection
 
@@ -137,7 +143,8 @@ docker compose --profile analytics run --rm analytics-api analytics-check
 ```
 
 It logs in as both service users, the way the services will, and prints `[ok]` or `[FAIL]`
-with the likely cause for each step. When all 7 pass, start the stack.
+with the likely cause for each step. The last check signs in as an analyst and confirms emails and amounts are masked. When all 8
+pass, start the stack.
 
 ### 3. Run the stack
 

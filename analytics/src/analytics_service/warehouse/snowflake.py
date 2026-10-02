@@ -74,7 +74,7 @@ def connect(settings: Settings, *, user: str, role: str, warehouse: str) -> Any:
     )
     # Belt and braces with DEFAULT_SECONDARY_ROLES = () on the user (01_rbac.sql):
     # with secondary roles active, IS_ROLE_IN_SESSION would see every role the
-    # service user holds and the masking policies would unmask for everyone.
+    # service user holds and the masking rules would unmask for everyone.
     conn.cursor().execute("USE SECONDARY ROLES NONE")
     return conn
 

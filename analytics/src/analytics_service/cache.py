@@ -13,7 +13,7 @@ The TTL is the upper bound on staleness if the version bump itself is lost
 
 FAIL OPEN. Redis is an optimisation. If it is unreachable, requests go straight
 to Snowflake — slower and more expensive, but correct, because the role the
-query runs under (and therefore every masking policy) is unaffected.
+query runs under (and therefore every masking rule) is unaffected.
 """
 
 from __future__ import annotations

@@ -87,7 +87,7 @@ def overview(principal: Principal, scope: Scope, window: Window) -> MetricQuery:
         else "NULL AS total_users, NULL AS new_users,"
     )
     # Revenue is only selected for callers allowed to see it. Snowflake's
-    # FINANCIAL tag would mask it to NULL anyway; not asking is cleaner.
+    # governed CORE view would return NULL anyway; not asking is cleaner.
     revenue = (
         f"(SELECT SUM(amount_paise) FROM CORE.FCT_CREDIT_PURCHASES "
         f"WHERE {_window('occurred_at')}{f}) AS revenue_paise"
@@ -182,7 +182,7 @@ def campaign_funnel(principal: Principal, scope: Scope, window: Window) -> Metri
 
 def top_spenders(principal: Principal, window: Window, limit: int) -> MetricQuery:
     params = window.params() | {"limit": int(limit)}
-    # `email` is selected unconditionally: the PII tag's masking policy decides
+    # `email` is selected unconditionally: the governed CORE view decides
     # whether the caller sees an address or a pseudonym. The API does not get
     # a vote, so it cannot get it wrong.
     sql = f"""
